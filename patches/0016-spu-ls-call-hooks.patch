@@ -1,0 +1,97 @@
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+index 3f89295..bcde586 100644
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -1575,6 +1575,33 @@ static int spu_taskset_resident_image(const spu_context* ctx)
+  * at LS 0x3000 (below it is the SPURS kernel/policy/context, 0x290..0x2FFF). */
+ #define SPU_TASKSET_TASK_LO 0x3000u
+ 
++/* LS call hooks: host code that stands in for a module a title loads into local
++ * store at runtime (a DSP .pic). The hook runs instead of interpreting the code
++ * at (image_id, pc); it receives the registers as at the call, does the work
++ * and leaves ctx->pc at the return address, like the real function's `bi $r0`. */
++#define SPU_LS_HOOK_MAX 16
++static struct { int image_id; uint32_t pc; spu_ls_hook_fn fn; } s_ls_hooks[SPU_LS_HOOK_MAX];
++static int s_ls_hook_count;
++
++void spu_register_ls_hook(int image_id, uint32_t pc, spu_ls_hook_fn fn)
++{
++    if (s_ls_hook_count < SPU_LS_HOOK_MAX) {
++        s_ls_hooks[s_ls_hook_count].image_id = image_id;
++        s_ls_hooks[s_ls_hook_count].pc = pc & SPU_LS_MASK;
++        s_ls_hooks[s_ls_hook_count].fn = fn;
++        s_ls_hook_count++;
++    }
++}
++
++static int spu_ls_hook_dispatch(spu_context* ctx)
++{
++    uint32_t pc = ctx->pc & SPU_LS_MASK;
++    for (int i = 0; i < s_ls_hook_count; i++)
++        if (s_ls_hooks[i].pc == pc && s_ls_hooks[i].image_id == ctx->image_id)
++            return s_ls_hooks[i].fn(ctx);
++    return 0;
++}
++
+ /* Content-signature variant: FMOD COPIES codec overlays to the heap before
+  * streaming them into the swap slot, so the source EA is unknowable ahead of
+  * time -- match the first 16 bytes of the streamed content instead. */
+@@ -2270,6 +2297,7 @@ void spu_indirect_branch(spu_context* ctx)
+      * the job" and reported stop_code 0, which reads as a runaway and sent a long
+      * chase after phantom memory corruption. Decode the target word instead: a
+      * `stop` is opcode 0 in the top 11 bits, so this is unambiguous. */
++    if (!fn && spu_ls_hook_dispatch(ctx)) return;
+     if (!fn) {
+         uint32_t p0 = ctx->pc & SPU_LS_MASK;
+         if (p0 + 3 < SPU_LS_SIZE) {
+@@ -2279,8 +2307,8 @@ void spu_indirect_branch(spu_context* ctx)
+                 ctx->stop_code = w & 0x3FFFu;
+                 static int _n = 0;
+                 if ((_n < 8 && ++_n))
+-                    fprintf(stderr, "[spu] img=%d exit: synthesised stop 0x%04X at LS 0x%05X\n",
+-                            ctx->image_id, ctx->stop_code, p0);
++                    fprintf(stderr, "[spu] img=%d exit: synthesised stop 0x%04X at LS 0x%05X (lr=0x%05X)\n",
++                            ctx->image_id, ctx->stop_code, p0, ctx->gpr[0]._u32[0] & SPU_LS_MASK);
+                 spu_halt(ctx);
+                 return;
+             }
+diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
+index e94a8e1..ab270ce 100644
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -392,6 +392,11 @@ typedef struct spu_context {
+     uint32_t drain_ret_pc;
+ } spu_context;
+ 
++/* Host stand-in for runtime-loaded SPU code at one LS address (see spu_channels.c).
++ * Returns nonzero when it handled the call and left ctx->pc at the return address. */
++typedef int (*spu_ls_hook_fn)(spu_context* ctx);
++void spu_register_ls_hook(int image_id, uint32_t pc, spu_ls_hook_fn fn);
++
+ /* Reserved LS addresses (inside the kernel area, below the 0xA00 policy-module
+  * base) that the HLE kernel plants as exitToKernelAddr / selectWorkloadAddr in
+  * the SpursKernelContext. A policy module branching to them is performing a
+diff --git a/runtime/spu/spu_dma.h b/runtime/spu/spu_dma.h
+index 76f5d4c..5770df6 100644
+--- a/runtime/spu/spu_dma.h
++++ b/runtime/spu/spu_dma.h
+@@ -494,6 +494,19 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
+             }
+         }
+     }
++    /* SPU_GETLOG=<lo>,<hi>: log (first 400) transfers whose LS side overlaps [lo,hi) --
++     * shows where a runtime-loaded module (e.g. a DSP .pic) or its state comes from / goes to. */
++    if (size) {
++        static int s_gl = -1; static uint32_t s_lo, s_hi;
++        if (s_gl < 0) { const char* e = getenv("SPU_GETLOG"); s_gl = 0;
++            if (e && sscanf(e, "%i,%i", (int*)&s_lo, (int*)&s_hi) == 2) s_gl = 1; }
++        if (s_gl && lsa < s_hi && lsa + size > s_lo) {
++            static int _n = 0;
++            if ((_n < 400 && ++_n))
++                fprintf(stderr, "[getlog] img%d %s pc=0x%05X lsa=0x%05X ea=0x%08X size=%u\n",
++                        spu->image_id, mfc_is_get(cmd) ? "GET" : "PUT", (uint32_t)spu->pc & SPU_LS_MASK, lsa, (uint32_t)ea, size);
++        }
++    }
+     /* The DSP descriptor arrives as a 368-byte GET shortly before the section
+      * load; remember where it came from so the substitution below can name it.
+      * That guest address is what a write-watch needs to find its producer. */

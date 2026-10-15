@@ -1,0 +1,90 @@
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+index 1895ee2..3de2881 100644
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -74,6 +74,9 @@
+ static NSWindow*           s_window;
+ static int                 s_headless;
+ static int                 s_closed;
++/* The window's content size in device pixels, kept current by the message pump (main thread) and read
++ * by the present path, which sizes the drawable to it. 0 until the first pump. */
++static volatile u32        s_win_px_w, s_win_px_h;
+ 
+ /* Image quality. PS3RECOMP_METAL_AF=1..16 is the anisotropic filtering limit applied to every
+  * linearly filtered game texture; PS3RECOMP_METAL_FXAA=0|1 runs an FXAA pass over the finished frame
+@@ -494,7 +497,14 @@ static int create_window_impl(const char* title)
+         [NSApp setMainMenu:bar];
+     }
+ 
++    /* PS3RECOMP_METAL_WINDOW=<w>x<h>: initial content size in points (default: the game's size). */
+     NSRect frame = NSMakeRect(0, 0, (CGFloat)s_width, (CGFloat)s_height);
++    {
++        unsigned ww = 0, wh = 0;
++        const char* ws = getenv("PS3RECOMP_METAL_WINDOW");
++        if (ws && sscanf(ws, "%ux%u", &ww, &wh) == 2 && ww >= 160 && wh >= 90 && ww <= 16384 && wh <= 16384)
++            frame.size = NSMakeSize((CGFloat)ww, (CGFloat)wh);
++    }
+     s_window = [[NSWindow alloc]
+         initWithContentRect:frame
+                   styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+@@ -3095,7 +3105,8 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+ /* Put a surface on the drawable. A straight blit would need matching formats
+  * and sizes; a full-screen sample needs neither, and the guest's surfaces are
+  * routinely a different size from the window. With FXAA on, the same full-screen
+- * pass is the anti-aliasing filter. */
++ * pass is the anti-aliasing filter. The picture keeps its aspect ratio: it is
++ * fitted into the drawable and centred, and the rest is black (letterbox). */
+ static id<MTLRenderPipelineState> eng_display_pso(MTLPixelFormat fmt, int fxaa)
+ {
+     id<MTLRenderPipelineState> __strong* pso = fxaa ? &s_eng_fxaa_pso : &s_eng_blit_pso;
+@@ -3124,13 +3135,20 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+     if (!pso) return;
+     MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+     rp.colorAttachments[0].texture     = dst;
+-    rp.colorAttachments[0].loadAction  = MTLLoadActionDontCare;
++    rp.colorAttachments[0].loadAction  = MTLLoadActionClear;
++    rp.colorAttachments[0].clearColor  = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+     id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
+     if (!e) return;
++    const double dw = (double)[dst width], dh = (double)[dst height];
++    const double sw = (double)[src width], sh = (double)[src height];
++    const double fit = fmin(dw / sw, dh / sh);
++    const double vw = floor(sw * fit + 0.5), vh = floor(sh * fit + 0.5);
++    [e setViewport:(MTLViewport){floor((dw - vw) * 0.5), floor((dh - vh) * 0.5), vw, vh, 0.0, 1.0}];
+     [e setRenderPipelineState:pso];
+     [e setFragmentTexture:src atIndex:0];
+-    [e setFragmentSamplerState:(s_fxaa ? s_eng_linear_sampler : s_eng_point_sampler) atIndex:0];
++    const int scaled = (vw != sw || vh != sh);
++    [e setFragmentSamplerState:((s_fxaa || scaled) ? s_eng_linear_sampler : s_eng_point_sampler) atIndex:0];
+     [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+     [e endEncoding];
+ }
+@@ -3156,6 +3174,14 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+             if (s_headless) {
+                 dst = s_offscreen;
+             } else {
++                /* The drawable is the window's size in device pixels, so the compositor does not
++                 * stretch it; eng_blit_to_display fits the game picture into it. */
++                const u32 ww = s_win_px_w, wh = s_win_px_h;
++                const CGSize cur = s_layer.drawableSize;
++                if (ww && wh && ((u32)cur.width != ww || (u32)cur.height != wh)) {
++                    s_layer.drawableSize = CGSizeMake((CGFloat)ww, (CGFloat)wh);
++                    fprintf(stderr, "[RSX metal] drawable %ux%u (window)\n", ww, wh);
++                }
+                 drawable = [s_layer nextDrawable];
+                 if (!drawable) {           /* compositor is busy; skip */
+                     dispatch_semaphore_signal(s_inflight);
+@@ -3474,6 +3500,12 @@ static int pump_messages_impl(void)
+             [NSApp sendEvent:ev];
+         }
+         if (s_window && ![s_window isVisible]) s_closed = 1;
++        if (s_window) {
++            NSView* v = [s_window contentView];
++            const NSSize px = [v convertSizeToBacking:[v bounds].size];
++            s_win_px_w = (u32)px.width;
++            s_win_px_h = (u32)px.height;
++        }
+     }
+ #endif
+     return s_closed ? -1 : 0;

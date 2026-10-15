@@ -1,0 +1,32 @@
+cellAudio (Windows): never mix two blocks back to back.
+
+WASAPI frees room in steps of an engine period, so the mixing loop mixed two blocks within microseconds. The guest's audio
+thread, woken by the notify after each block, had no time to write the second one and every other block was silent
+(measured with AUDIO_WAV: 50% silent blocks, 7800 silent/non-silent transitions in 45 s; macOS: 3.7%, 4).
+A minimum gap of 4 ms between two mixed blocks restores one block per notify.
+
+---
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -549,9 +549,20 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+      * With no device, pace on the performance counter instead. */
+     LARGE_INTEGER qf, q0; QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&q0);
+     unsigned long long blocks = 0;
++    /* A device that reports room in coarse steps (WASAPI wakes the loop once per engine period, 10 ms or more) frees
++     * room for two blocks at a time. Mixing both at once leaves the guest no time for the second: the game's audio
++     * thread is woken by the notify below and needs a few ms to write the next block, so every other block was mixed
++     * before it arrived and came out silent -- a 50% crackle. Keep a minimum gap between two blocks. */
++    const long long min_gap = qf.QuadPart * 4 / 1000;   /* 4 ms; a block is 5.33 ms */
++    long long last_mix = 0;
+     while (s_mix_thread_running) {
+         const int room = audio_backend_room();
+         if (room >= 0 && room < CELL_AUDIO_BLOCK_SAMPLES) { audio_backend_wait(); continue; }
++        if (room >= 0) {
++            LARGE_INTEGER now; QueryPerformanceCounter(&now);
++            if (now.QuadPart - last_mix < min_gap) { Sleep(1); continue; }
++            last_mix = now.QuadPart;
++        }
+         if (room < 0) {
+             LARGE_INTEGER now; QueryPerformanceCounter(&now);
+             const long long due = q0.QuadPart +

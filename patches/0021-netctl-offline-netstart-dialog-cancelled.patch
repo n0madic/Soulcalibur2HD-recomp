@@ -1,0 +1,42 @@
+diff --git a/libs/network/cellNetCtl.c b/libs/network/cellNetCtl.c
+index c7926c0..dd1a104 100644
+--- a/libs/network/cellNetCtl.c
++++ b/libs/network/cellNetCtl.c
+@@ -334,6 +334,13 @@ s32 cellNetCtlDelHandler(s32 hid)
+  * post LOADED + FINISHED to every registered sysutil callback slot and report a
+  * successful result on unload. This unblocks the common boot-time "connecting
+  * to network" gate without requiring a real PSN session.
++ *
++ * That only holds while the port claims a connection (PS3_NET_ONLINE=1).
++ * Offline, GetState already fails, and a title that gets "connected" here goes
++ * on to create NP matching contexts whose callbacks never come, so its menu
++ * waits forever. Offline the dialog ends the way it does on a console with no
++ * link after the player backs out of it: result DIALOG_CANCELED, which games
++ * answer with their own "could not connect" path.
+  * -----------------------------------------------------------------------*/
+ 
+ static void netstart_broadcast(u32 status)
+@@ -347,7 +354,8 @@ static void netstart_broadcast(u32 status)
+ s32 cellNetCtlNetStartDialogLoadAsync(const CellNetCtlNetStartDialogParam* param)
+ {
+     (void)param;
+-    printf("[cellNetCtl] NetStartDialogLoadAsync() -> auto-connect\n");
++    printf("[cellNetCtl] NetStartDialogLoadAsync() -> %s\n",
++           netctl_online() ? "auto-connect" : "no network, dialog will be cancelled");
+     netstart_broadcast(CELL_SYSUTIL_NET_CTL_NETSTART_LOADED);
+     netstart_broadcast(CELL_SYSUTIL_NET_CTL_NETSTART_FINISHED);
+     return CELL_OK;
+@@ -363,9 +371,11 @@ s32 cellNetCtlNetStartDialogUnloadAsync(CellNetCtlNetStartDialogResult* result)
+ {
+     if (result) {
+         result = GUEST_PTR(result, CellNetCtlNetStartDialogResult*);
+-        result->result = 0;   /* 0 = connected; endian-safe */
++        result->result = netctl_online() ? 0   /* 0 = connected; endian-safe */
++                                         : (s32)ps3_bswap32((u32)CELL_NET_CTL_ERROR_DIALOG_CANCELED);
+     }
+-    printf("[cellNetCtl] NetStartDialogUnloadAsync() -> result=0 (connected)\n");
++    printf("[cellNetCtl] NetStartDialogUnloadAsync() -> %s\n",
++           netctl_online() ? "result=0 (connected)" : "result=DIALOG_CANCELED (offline)");
+     netstart_broadcast(CELL_SYSUTIL_NET_CTL_NETSTART_UNLOADED);
+     return CELL_OK;
+ }

@@ -1,0 +1,190 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 94de794..85feb90 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -169,6 +169,7 @@ if(APPLE)
+         "-framework QuartzCore"
+         "-framework Foundation"
+         "-framework AppKit"
++        "-framework ApplicationServices"
+     )
+     set_source_files_properties(
+         "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_metal_backend.m"
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index f2b4c11..93774af 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -87,33 +87,6 @@ static SDL_GameController* s_sdl_controllers[PAD_MAX_HOST_PORTS];
+ static int s_sdl_inited = 0;
+ #endif
+ 
+-/* ---------------------------------------------------------------------------
+- * XInput backend
+- * -----------------------------------------------------------------------*/
+-
+-#if PAD_BACKEND_XINPUT
+-
+-/* Deadzone for analog sticks (same as XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) */
+-#define PAD_STICK_DEADZONE  7849
+-#define PAD_TRIGGER_THRESHOLD 30
+-
+-static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
+-{
+-    float normalized;
+-    if (raw > deadzone)
+-        normalized = (float)(raw - deadzone) / (float)(32767 - deadzone);
+-    else if (raw < -deadzone)
+-        normalized = (float)(raw + deadzone) / (float)(32767 - deadzone);
+-    else
+-        normalized = 0.0f;
+-
+-    /* Map -1.0..1.0 to 0..255 with center at 128 */
+-    int val = (int)(normalized * 127.0f) + 128;
+-    if (val < 0) val = 0;
+-    if (val > 255) val = 255;
+-    return (u8)val;
+-}
+-
+ /* Keyboard fallback for port 0.
+  *
+  * The only backend here is XInput, so on a machine with no controller plugged
+@@ -139,7 +112,60 @@ static int pad_host_window_focused(void)
+     GetWindowThreadProcessId(fg, &pid);
+     return pid == GetCurrentProcessId();
+ }
++static int pad_key_down(int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; }
++#define PADKEY_UP VK_UP
++#define PADKEY_DOWN VK_DOWN
++#define PADKEY_LEFT VK_LEFT
++#define PADKEY_RIGHT VK_RIGHT
++#define PADKEY_Z 'Z'
++#define PADKEY_X 'X'
++#define PADKEY_A 'A'
++#define PADKEY_S 'S'
++#define PADKEY_Q 'Q'
++#define PADKEY_W 'W'
++#define PADKEY_1 '1'
++#define PADKEY_2 '2'
++#define PADKEY_RETURN VK_RETURN
++#define PADKEY_TAB VK_TAB
++#elif defined(__APPLE__)
++/* macOS: virtual key codes (Carbon HIToolbox/Events.h kVK_*), polled with CGEventSourceKeyState,
++ * which needs no event tap and no window. "Focused" is NSApplication.isActive of this process,
++ * queried through the Objective-C runtime so this file stays plain C. */
++/* The system headers are not included on purpose: ApplicationServices / objc.h clash with this
++ * project's own `bool` and GetCurrentThread/GetCurrentProcess names, so the three entry points
++ * are declared by hand (CGKeyCode is uint16_t, kCGEventSourceStateCombinedSessionState is 0). */
++extern unsigned char CGEventSourceKeyState(int stateID, unsigned short key);
++extern void* objc_getClass(const char* name);
++extern void* sel_registerName(const char* name);
++extern void objc_msgSend(void);
++static int pad_host_window_focused(void)
++{
++    void* cls = objc_getClass("NSApplication");
++    if (!cls) return 0;
++    void* app = ((void* (*)(void*, void*))objc_msgSend)(cls, sel_registerName("sharedApplication"));
++    return app && ((signed char (*)(void*, void*))objc_msgSend)(app, sel_registerName("isActive"));
++}
++static int pad_key_down(int key)
++{
++    return CGEventSourceKeyState(0, (unsigned short)key) != 0;
++}
++#define PADKEY_UP 126
++#define PADKEY_DOWN 125
++#define PADKEY_LEFT 123
++#define PADKEY_RIGHT 124
++#define PADKEY_Z 6
++#define PADKEY_X 7
++#define PADKEY_A 0
++#define PADKEY_S 1
++#define PADKEY_Q 12
++#define PADKEY_W 13
++#define PADKEY_1 18
++#define PADKEY_2 19
++#define PADKEY_RETURN 36
++#define PADKEY_TAB 48
++#endif
+ 
++#if defined(_WIN32) || defined(__APPLE__)
+ static void pad_poll_keyboard(void)
+ {
+     static int off = -1;
+@@ -147,6 +173,7 @@ static void pad_poll_keyboard(void)
+     if (off) return;
+ 
+     PadHostState* hs = &s_host_state[0];
++
+     if (!pad_host_window_focused()) {
+         /* Release everything on focus loss, or a key held while alt-tabbing
+          * would stay down forever. */
+@@ -158,18 +185,18 @@ static void pad_poll_keyboard(void)
+     }
+ 
+     static const struct { int vk; u16 btn; } map[] = {
+-        { VK_UP,     CELL_PAD_CTRL_UP },      { VK_DOWN,  CELL_PAD_CTRL_DOWN },
+-        { VK_LEFT,   CELL_PAD_CTRL_LEFT },    { VK_RIGHT, CELL_PAD_CTRL_RIGHT },
+-        { 'Z',       CELL_PAD_CTRL_CROSS },   { 'X',      CELL_PAD_CTRL_CIRCLE },
+-        { 'A',       CELL_PAD_CTRL_SQUARE },  { 'S',      CELL_PAD_CTRL_TRIANGLE },
+-        { 'Q',       CELL_PAD_CTRL_L1 },      { 'W',      CELL_PAD_CTRL_R1 },
+-        { '1',       CELL_PAD_CTRL_L2 },      { '2',      CELL_PAD_CTRL_R2 },
+-        { VK_RETURN, CELL_PAD_CTRL_START },   { VK_TAB,   CELL_PAD_CTRL_SELECT },
++        { PADKEY_UP,     CELL_PAD_CTRL_UP },      { PADKEY_DOWN,  CELL_PAD_CTRL_DOWN },
++        { PADKEY_LEFT,   CELL_PAD_CTRL_LEFT },    { PADKEY_RIGHT, CELL_PAD_CTRL_RIGHT },
++        { PADKEY_Z,      CELL_PAD_CTRL_CROSS },   { PADKEY_X,     CELL_PAD_CTRL_CIRCLE },
++        { PADKEY_A,      CELL_PAD_CTRL_SQUARE },  { PADKEY_S,     CELL_PAD_CTRL_TRIANGLE },
++        { PADKEY_Q,      CELL_PAD_CTRL_L1 },      { PADKEY_W,     CELL_PAD_CTRL_R1 },
++        { PADKEY_1,      CELL_PAD_CTRL_L2 },      { PADKEY_2,     CELL_PAD_CTRL_R2 },
++        { PADKEY_RETURN, CELL_PAD_CTRL_START },   { PADKEY_TAB,   CELL_PAD_CTRL_SELECT },
+     };
+ 
+     u16 btns = 0;
+     for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++)
+-        if (GetAsyncKeyState(map[i].vk) & 0x8000) btns |= map[i].btn;
++        if (pad_key_down(map[i].vk)) btns |= map[i].btn;
+ 
+     hs->buttons   = btns;
+     hs->connected = 1;
+@@ -188,6 +215,34 @@ static void pad_poll_keyboard(void)
+ }
+ #endif
+ 
++/* ---------------------------------------------------------------------------
++ * XInput backend
++ * -----------------------------------------------------------------------*/
++
++#if PAD_BACKEND_XINPUT
++
++/* Deadzone for analog sticks (same as XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) */
++#define PAD_STICK_DEADZONE  7849
++#define PAD_TRIGGER_THRESHOLD 30
++
++static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
++{
++    float normalized;
++    if (raw > deadzone)
++        normalized = (float)(raw - deadzone) / (float)(32767 - deadzone);
++    else if (raw < -deadzone)
++        normalized = (float)(raw + deadzone) / (float)(32767 - deadzone);
++    else
++        normalized = 0.0f;
++
++    /* Map -1.0..1.0 to 0..255 with center at 128 */
++    int val = (int)(normalized * 127.0f) + 128;
++    if (val < 0) val = 0;
++    if (val > 255) val = 255;
++    return (u8)val;
++}
++
++
+ static void pad_poll_xinput(void)
+ {
+     for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
+@@ -439,7 +494,7 @@ static void pad_poll_backend(void)
+ #elif PAD_BACKEND_SDL2
+     pad_poll_sdl2();
+ #endif
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(__APPLE__)
+     if (!s_host_state[0].connected) pad_poll_keyboard();
+ #endif
+ }

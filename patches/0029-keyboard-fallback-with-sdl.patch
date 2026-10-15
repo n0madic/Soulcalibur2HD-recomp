@@ -1,0 +1,56 @@
+Keyboard fallback for pad 0 on every SDL platform (Linux).
+
+The keyboard fallback existed for Windows and macOS only, so on Linux the pad was reported absent and a window could be
+watched but not played. The SDL pad backend now reads the keyboard through SDL_GetKeyboardState, with the same keys as the
+other two, while a window of the process has the keyboard focus. The state is kept current by the window's event pump (the
+RSX backend's); the fallback only fills in when no controller is connected on port 0.
+
+---
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -170,9 +170,35 @@
+ #define PADKEY_2 19
+ #define PADKEY_RETURN 36
+ #define PADKEY_TAB 48
++#elif PAD_BACKEND_SDL2
++/* Everywhere else the keyboard is SDL's: scancodes are physical keys, like the macOS codes above. The state is kept
++ * current by whoever pumps SDL's events (the window of the RSX backend); without a video subsystem nothing is ever
++ * pressed. "Focused" is that some window of this process has the keyboard focus. */
++static int pad_host_window_focused(void)
++{
++    return SDL_GetKeyboardFocus() != NULL;
++}
++static int pad_key_down(int key)
++{
++    return SDL_GetKeyboardState(NULL)[key] != 0;
++}
++#define PADKEY_UP SDL_SCANCODE_UP
++#define PADKEY_DOWN SDL_SCANCODE_DOWN
++#define PADKEY_LEFT SDL_SCANCODE_LEFT
++#define PADKEY_RIGHT SDL_SCANCODE_RIGHT
++#define PADKEY_Z SDL_SCANCODE_Z
++#define PADKEY_X SDL_SCANCODE_X
++#define PADKEY_A SDL_SCANCODE_A
++#define PADKEY_S SDL_SCANCODE_S
++#define PADKEY_Q SDL_SCANCODE_Q
++#define PADKEY_W SDL_SCANCODE_W
++#define PADKEY_1 SDL_SCANCODE_1
++#define PADKEY_2 SDL_SCANCODE_2
++#define PADKEY_RETURN SDL_SCANCODE_RETURN
++#define PADKEY_TAB SDL_SCANCODE_TAB
+ #endif
+ 
+-#if defined(_WIN32) || defined(__APPLE__)
++#if defined(_WIN32) || defined(__APPLE__) || PAD_BACKEND_SDL2
+ static void pad_poll_keyboard(void)
+ {
+     static int off = -1;
+@@ -552,7 +578,7 @@
+ #elif PAD_BACKEND_SDL2
+     pad_poll_sdl2();
+ #endif
+-#if defined(_WIN32) || defined(__APPLE__)
++#if defined(_WIN32) || defined(__APPLE__) || PAD_BACKEND_SDL2
+     if (!s_host_state[0].connected) pad_poll_keyboard();
+ #endif
+ }

@@ -1,0 +1,141 @@
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 14b8dc4..0861138 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -770,6 +770,100 @@ static u32 gcm_io2ea(u32 io)
+ #define GCM_SHADOW_EA   0xA0000000u   /* inside the 0xE0000000 arena the ports allocate on POSIX */
+ #define GCM_SHADOW_SIZE 0x300000u
+ 
++/* Display lists copied at the moment the guest publishes them.
++ *
++ * The walker reads a called list when it reaches the CALL, which can be several frames after the
++ * game wrote it: the game double-buffers its lists on the strength of a real RSX that never falls
++ * more than a frame behind, and a walker stalled in present() (or not yet started) lets it overwrite
++ * a list it has queued but not yet had executed. Whatever that frame sent once -- the 2D vertex
++ * program matrix, here -- is then lost for good. So every store to the control register's `put`
++ * walks the new ring words and copies each list they CALL, while the list is still what the game
++ * wrote; the walker takes the copy for the CALL at the same ring position. A list is copied up to
++ * its RET; one that does not end in a RET within GCM_PRE_MAX bytes, or branches, is left to the
++ * walker's own snapshot of the live memory. */
++#define GCM_PRE_SNAPS   32u
++#define GCM_PRE_MAX     GCM_SHADOW_SIZE
++typedef struct { u32 ring_off, tgt, valid, seq, len; u8* data; } gcm_pre_snap;
++static gcm_pre_snap s_pre[GCM_PRE_SNAPS];
++static u32          s_pre_scan = 0xFFFFFFFFu; /* ring offset the next scan starts at */
++static u32          s_pre_seq;
++static SRWLOCK      s_pre_lock = SRWLOCK_INIT;
++
++/* Bytes of the list at IO offset `tgt` up to and including its RET, or 0. */
++static u32 gcm_list_length(u32 tgt)
++{
++    for (u32 off = 0; off < GCM_PRE_MAX; ) {
++        const u32 ea = gcm_io2ea(tgt + off);
++        if (!ea) return 0;
++        const u32 w = vm_read32(ea);
++        if (w == 0x00020000u) return off + 4;                                           /* RET */
++        if ((w & 0xE0000003u) == 0x20000000u) return 0;                                 /* JUMP: not a plain list */
++        if ((w & 3u) == 2u) { off += 4; continue; }                                     /* nested CALL */
++        const u32 type = w >> 29;
++        if (type == 0 || type == 2) off += 4 + ((w >> 18) & 0x7FFu) * 4u;
++        else                        off += 4;
++    }
++    return 0;
++}
++
++static void gcm_pre_scan(u32 put)
++{
++    static int on = -1;
++    if (on < 0) on = getenv("GCM_SNAPSHOT_CALLS") ? 1 : 0;
++    if (!on || !vm_base) return;
++    AcquireSRWLockExclusive(&s_pre_lock);
++    if (s_pre_scan == 0xFFFFFFFFu) s_pre_scan = s_fifo_getoff;
++    u32 off = s_pre_scan;
++    for (u32 steps = 0; off != put && steps < 8192; steps++) {
++        const u32 ea = gcm_io2ea(off);
++        if (!ea) break;
++        const u32 w = vm_read32(ea);
++        if ((w & 0xE0000003u) == 0x20000000u) { off = w & 0x1FFFFFFCu; continue; }      /* JUMP */
++        if ((w & 3u) == 2u) {                                                           /* CALL */
++            const u32 tgt = w & 0x1FFFFFFCu, tea = gcm_io2ea(tgt), len = tea ? gcm_list_length(tgt) : 0;
++            if (len) {
++                u32 slot = GCM_PRE_SNAPS;
++                for (u32 k = 0; k < GCM_PRE_SNAPS; k++) if (!s_pre[k].valid) { slot = k; break; }
++                if (slot == GCM_PRE_SNAPS) break;               /* walker is far behind: it falls back to the live list */
++                u8* copy = (u8*)realloc(s_pre[slot].data, len);
++                if (!copy) break;
++                memcpy(copy, vm_base + tea, len);
++                s_pre[slot].data = copy; s_pre[slot].len = len;
++                s_pre[slot].ring_off = off; s_pre[slot].tgt = tgt; s_pre[slot].valid = 1; s_pre[slot].seq = ++s_pre_seq;
++            }
++            off += 4; continue;
++        }
++        if (w == 0x00020000u) { off += 4; continue; }                                   /* RET */
++        const u32 type = w >> 29;
++        if (type == 0 || type == 2) off += 4 + ((w >> 18) & 0x7FFu) * 4u;               /* method header + data */
++        else                        off += 4;
++    }
++    s_pre_scan = off;
++    ReleaseSRWLockExclusive(&s_pre_lock);
++}
++
++/* Called by the guest's store to the control register's put word. */
++void cellGcm_on_put_store(u32 put) { gcm_pre_scan(put & 0x1FFFFFFCu); }
++
++/* Copy the list taken for the CALL at ring offset `ring_off` into the shadow range; 0 if there is none.
++ * Consumed once. */
++static int gcm_pre_take(u32 ring_off, u32 tgt, u8* dst)
++{
++    int ok = 0;
++    AcquireSRWLockExclusive(&s_pre_lock);
++    for (u32 k = 0; k < GCM_PRE_SNAPS; k++)
++        if (s_pre[k].valid && s_pre[k].ring_off == ring_off && s_pre[k].tgt == tgt) {
++            memcpy(dst, s_pre[k].data, s_pre[k].len);
++            s_pre[k].valid = 0; ok = 1;
++            /* The walker takes CALLs in order, so anything copied before this one it never reached is stale. */
++            for (u32 j = 0; j < GCM_PRE_SNAPS; j++)
++                if (s_pre[j].valid && (s32)(s_pre[j].seq - s_pre[k].seq) < 0) s_pre[j].valid = 0;
++            break;
++        }
++    ReleaseSRWLockExclusive(&s_pre_lock);
++    return ok;
++}
++
+ /* RSX get pointer (IO offset) + one-deep CALL return slot. The FIFO-wrap
+  * recycle path teleports these when it resets a ring without a JUMP command. */
+ /* Milliseconds on a monotonic clock, for the runtime's own timeouts and rate
+@@ -907,8 +1001,8 @@ static void nv3089_blit(void)
+           if ((poll++ & 63u) == 0) { FILE* g = fopen(gate, "rb"); open_gate = g != NULL; if (g) fclose(g); }
+           if (open_gate) {
+               int _sl = (s_nv3089.src_dma != 0xFEED0001u), _dl = (s_gcm2d.dst_dma != 0xFEED0001u);
+-              printf("[NV3089G] fmt=0x%X out=%ux%u at %u,%u in=%ux%u uv=0x%08X ds=0x%X dt=0x%X src=0x%08X/%u dst=0x%08X/%u swz=%d%c",
+-                     s_nv3089.fmt & 0xFF, out_w, out_h, out_x, out_y,
++              printf("[NV3089G] op=%u fmt=0x%X out=%ux%u at %u,%u in=%ux%u uv=0x%08X ds=0x%X dt=0x%X src=0x%08X/%u dst=0x%08X/%u swz=%d%c",
++                     s_nv3089.op, s_nv3089.fmt & 0xFF, out_w, out_h, out_x, out_y,
+                      s_nv3089.in_sz & 0xFFFF, s_nv3089.in_sz >> 16, s_nv3089.in_uv,
+                      s_nv3089.ds_dx, s_nv3089.dt_dy,
+                      cellGcmResolveLocated(_sl, s_nv3089.in_off), in_pitch,
+@@ -1765,7 +1859,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+                 if (e) {
+                     for (u32 pg = 0; pg < GCM_SHADOW_SIZE >> 20; pg++)
+                         s_ea_address_table[(GCM_SHADOW_IO >> 20) + pg] = (u16)((GCM_SHADOW_EA >> 20) + pg);
+-                    memcpy(vm_base + GCM_SHADOW_EA, vm_base + e, GCM_SHADOW_SIZE);
++                    if (!gcm_pre_take(s_fifo_getoff, tgt, vm_base + GCM_SHADOW_EA))
++                        memcpy(vm_base + GCM_SHADOW_EA, vm_base + e, GCM_SHADOW_SIZE);
+                     tgt = GCM_SHADOW_IO;
+                 } }
+               s_fifo_calloff = s_fifo_getoff + 4;
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index bf75dc8..9cf8c42 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -1892,7 +1892,9 @@ void vm_write32(uint64_t a, uint32_t v) { barrier_watch_hit((uint32_t)a, v, 4, _
+       /* Raw SPU problem state: run control, mailboxes and signal notification
+        * have side effects. The plain store above still happens -- the registers
+        * are guest memory and the PPU reads most of them straight back. */
+-      if (spu_raw_is_reg((uint32_t)a)) spu_raw_reg_store((uint32_t)a, _v, 4); } }
++      if (spu_raw_is_reg((uint32_t)a)) spu_raw_reg_store((uint32_t)a, _v, 4);
++      /* The RSX control register's put word: the guest just published new ring commands. */
++      if ((uint32_t)a == VM_HLE_INJECT_BASE + 0x2000u) { extern void cellGcm_on_put_store(uint32_t); cellGcm_on_put_store(_v); } } }
+ void vm_write64(uint64_t a, uint64_t v) {
+     /* PPU_WWATCH covers the 64-bit store too. It did not, which made the watch
+      * blind to exactly the code that matters most for it: every bignum and

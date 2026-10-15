@@ -1,0 +1,33 @@
+diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
+index e8f6c2b..0360725 100644
+--- a/runtime/ppu/ppu_fs.cpp
++++ b/runtime/ppu/ppu_fs.cpp
+@@ -111,7 +111,27 @@ static void host_path(char* out, size_t cap, const char* guest)
+     if (strncmp(guest, "/dev_flash/", 11) == 0) {
+         const char* fw = getenv("PS3_DEV_FLASH");
+         if (!fw || !*fw) fw = "D:/recomp/tools/rpcs3/dev_flash";
+-        snprintf(out, cap, "%s/%s", fw, guest + 11);
++        /* PS3_DEV_FLASH may list several roots (':' on POSIX, ';' on Windows): the first one that
++         * holds the file wins, so a directory of stand-ins can shadow firmware files. The first root
++         * is used when none has it. */
++#ifdef _WIN32
++        const char sep = ';';
++#else
++        const char sep = ':';
++#endif
++        const char* root = fw;
++        for (const char* r = fw; r && *r; ) {
++            const char* e = strchr(r, sep);
++            size_t n = e ? (size_t)(e - r) : strlen(r);
++            snprintf(out, cap, "%.*s/%s", (int)n, r, guest + 11);
++            struct stat _st;
++            if (stat(out, &_st) == 0) { root = NULL; break; }
++            r = e ? e + 1 : NULL;
++        }
++        if (root) {
++            const char* e = strchr(root, sep);
++            snprintf(out, cap, "%.*s/%s", e ? (int)(e - root) : (int)strlen(root), root, guest + 11);
++        }
+         for (char* p = out; *p; p++) if (*p == '\\') *p = '/';
+         return;
+     }

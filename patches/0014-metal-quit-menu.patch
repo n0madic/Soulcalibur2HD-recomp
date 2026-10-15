@@ -1,0 +1,38 @@
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+index d04b34e..682796d 100644
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -459,10 +459,33 @@ static int create_offscreen(void)
+ }
+ 
+ #if !TARGET_OS_IPHONE
++/* Cmd+Q: the window has no menu bar of its own, so the keystroke went nowhere. It asks the host to stop
++ * the way closing the window does; the pump reports it. */
++@interface RsxQuitTarget : NSObject
++- (void)quit:(id)sender;
++@end
++@implementation RsxQuitTarget
++- (void)quit:(id)sender { (void)sender; s_closed = 1; }
++@end
++static RsxQuitTarget* s_quit_target;
++
+ static int create_window_impl(const char* title)
+ {
+     [NSApplication sharedApplication];
+     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
++    {
++        s_quit_target = [RsxQuitTarget new];
++        NSMenu* bar = [NSMenu new];
++        NSMenuItem* appItem = [NSMenuItem new];
++        [bar addItem:appItem];
++        NSMenu* appMenu = [NSMenu new];
++        NSString* quitTitle = [@"Quit " stringByAppendingString:[NSString stringWithUTF8String:(title ? title : "ps3recomp")]];
++        NSMenuItem* quit = [[NSMenuItem alloc] initWithTitle:quitTitle action:@selector(quit:) keyEquivalent:@"q"];
++        [quit setTarget:s_quit_target];
++        [appMenu addItem:quit];
++        [appItem setSubmenu:appMenu];
++        [NSApp setMainMenu:bar];
++    }
+ 
+     NSRect frame = NSMakeRect(0, 0, (CGFloat)s_width, (CGFloat)s_height);
+     s_window = [[NSWindow alloc]

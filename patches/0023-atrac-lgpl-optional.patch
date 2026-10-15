@@ -1,0 +1,46 @@
+Make the LGPL-2.1 ATRAC3plus decoder optional (PS3RECOMP_ATRAC_LGPL, default ON).
+
+With it OFF, a stub answers at3p_open with NULL so the library has no LGPL code in it.
+
+---
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -76,9 +76,16 @@
+ list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_shader_msl.cpp")
+ # cellAtrac decodes with FFmpeg's ATRAC3plus decoder as extracted by PPSSPP
+ # (LGPL-2.1, kept separate in third_party/at3_standalone -- see its README).
+-file(GLOB AT3_SOURCES "third_party/at3_standalone/*.cpp")
+-set_source_files_properties(${AT3_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")  # upstream code
+-list(APPEND HLE_SOURCES ${AT3_SOURCES})
++# PS3RECOMP_ATRAC_LGPL=OFF swaps the decoder for a stub that fails every open, which keeps the library and any
++# binary linked from it free of LGPL code (third_party/at3_stub).
++option(PS3RECOMP_ATRAC_LGPL "Link the LGPL-2.1 ATRAC3plus decoder (cellAtrac)" ON)
++if(PS3RECOMP_ATRAC_LGPL)
++    file(GLOB AT3_SOURCES "third_party/at3_standalone/*.cpp")
++    set_source_files_properties(${AT3_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")  # upstream code
++    list(APPEND HLE_SOURCES ${AT3_SOURCES})
++else()
++    list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/at3_stub/at3_stub.c")
++endif()
+ 
+ # Runtime core (syscalls, PPU, SPU, memory)
+ file(GLOB_RECURSE RUNTIME_SOURCES
+diff --git a/third_party/at3_stub/at3_stub.c b/third_party/at3_stub/at3_stub.c
+new file mode 100644
+--- /dev/null
++++ b/third_party/at3_stub/at3_stub.c
+@@ -0,0 +1,14 @@
++/* Stand-in for the ATRAC3plus decoder (third_party/at3_standalone, LGPL-2.1) in builds that must stay free of
++ * LGPL code, e.g. a single statically linked binary under a permissive license (PS3RECOMP_ATRAC_LGPL=OFF).
++ * at3p_open reports failure, so cellAtrac refuses to set up a track and the title sees an ATRAC error. */
++#include "../at3_standalone/at3_bridge.h"
++#include <stddef.h>
++
++void* at3p_open(int channels, int* block_align) { (void)channels; (void)block_align; return NULL; }
++void  at3p_close(void* dec) { (void)dec; }
++void  at3p_flush(void* dec) { (void)dec; }
++int   at3p_decode(void* dec, float* left, float* right, int* samples, const uint8_t* frame, int frame_bytes)
++{
++    (void)dec; (void)left; (void)right; (void)samples; (void)frame; (void)frame_bytes;
++    return -1;
++}

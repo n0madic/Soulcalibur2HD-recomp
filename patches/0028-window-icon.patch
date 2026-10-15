@@ -1,0 +1,53 @@
+Window icon: let the port set one.
+
+The D3D12 and null backends register their Win32 window class without an icon, so the title bar and the taskbar show the
+generic one. They now load the executable's first icon resource (id 1), if it has one. The Metal backend calls an
+optional, weakly linked hook (sc2hd_set_app_icon) once the application is a regular (Dock) one, so the port can set the
+Dock icon of a bare executable. Without the resource or the hook nothing changes.
+
+---
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 28daf9a..b7d2ae1 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -518,6 +518,8 @@ static HWND create_window(u32 width, u32 height, const char* title)
+     wc.lpfnWndProc = d3d12_wndproc;
+     wc.hInstance = GetModuleHandle(NULL);
+     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
++    /* The executable's first icon resource (id 1), if it has one: the port embeds it. */
++    wc.hIcon = wc.hIconSm = LoadIconA(wc.hInstance, MAKEINTRESOURCEA(1));
+     wc.lpszClassName = "ps3recomp_d3d12";
+     RegisterClassExA(&wc);
+ 
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+index 3de2881..0b2d634 100644
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -479,10 +479,14 @@ - (void)quit:(id)sender { (void)sender; s_closed = 1; }
+ @end
+ static RsxQuitTarget* s_quit_target;
+ 
++/* Optional hook the port defines: sets the Dock icon. */
++extern void sc2hd_set_app_icon(void) __attribute__((weak));
++
+ static int create_window_impl(const char* title)
+ {
+     [NSApplication sharedApplication];
+     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
++    if (sc2hd_set_app_icon) sc2hd_set_app_icon();
+     {
+         s_quit_target = [RsxQuitTarget new];
+         NSMenu* bar = [NSMenu new];
+diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+index 32e8a95..355cf09 100644
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -243,6 +243,8 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)
+     wc.lpfnWndProc = null_wndproc;
+     wc.hInstance = GetModuleHandle(NULL);
+     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
++    /* The executable's first icon resource (id 1), if it has one: the port embeds it. */
++    wc.hIcon = wc.hIconSm = LoadIconA(wc.hInstance, MAKEINTRESOURCEA(1));
+     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+     wc.lpszClassName = "ps3recomp_null";
+     RegisterClassExA(&wc);

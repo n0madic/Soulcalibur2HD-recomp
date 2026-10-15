@@ -1,0 +1,15 @@
+diff --git a/libs/system/cellMsgDialog.h b/libs/system/cellMsgDialog.h
+index 632e646..63d3be5 100644
+--- a/libs/system/cellMsgDialog.h
++++ b/libs/system/cellMsgDialog.h
+@@ -36,8 +36,8 @@ extern "C" {
+ #define CELL_MSGDIALOG_TYPE_PROGRESSBAR_DOUBLE     0x00002000
+ 
+ /* Button results */
+-#define CELL_MSGDIALOG_BUTTON_NONE     0
+-#define CELL_MSGDIALOG_BUTTON_INVALID  (-1)
++#define CELL_MSGDIALOG_BUTTON_NONE     (-1)   /* closed by the title (Close); RPCS3: NONE = -1, INVALID = 0 */
++#define CELL_MSGDIALOG_BUTTON_INVALID  0
+ #define CELL_MSGDIALOG_BUTTON_OK       1
+ #define CELL_MSGDIALOG_BUTTON_YES      1
+ #define CELL_MSGDIALOG_BUTTON_NO       2

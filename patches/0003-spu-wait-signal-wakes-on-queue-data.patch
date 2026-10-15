@@ -1,0 +1,381 @@
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+index 2a74e51..a4b92aa 100644
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -21,9 +21,9 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <setjmp.h>
+-#ifndef _WIN32
+-#include <sched.h>   /* sched_yield */
+-#endif
++#ifndef _WIN32
++#include <sched.h>   /* sched_yield */
++#endif
+ #include <time.h>
+ #include "../platform/win32_compat.h"
+ 
+@@ -65,48 +65,48 @@ static uint64_t spu_host_ns(void)
+ #else
+ #  define SPU_TLS __thread
+ #endif
+-/* Called after an SPU atomic commits a 128-byte line, with the lock-line lock
+- * released. cellSpurs sets it so a PPU blocked in cellSpursEventFlagWait wakes
+- * when a task sets the flag, instead of on its next 2 ms poll. */
+-void (*g_spu_line_commit_hook)(uint32_t line) = 0;
+-/* spu_workload.c: wakes tasks parked in WAIT_SIGNAL on that line's taskset. */
+-void spu_taskset_line_committed(uint32_t line);
+-/* SPU_LS_WATCH=0x1BE80[,0x927D80...]: watch up to 4 16-byte LS lines (reads
+- * and writes) in every SPU image. See spu_ls_watch_hit2 for the fast path. */
+-#define SPU_WATCH_MAX 4
+-int g_spu_ls_watch_n = -1;
+-static unsigned s_spu_ls_watch[SPU_WATCH_MAX];
+-unsigned* spu_ls_watch_list(int* out_n)
+-{
+-    if (g_spu_ls_watch_n < 0) {
+-        int n = 0; const char* e = getenv("SPU_LS_WATCH");
+-        while (e && *e && n < SPU_WATCH_MAX) {
+-            s_spu_ls_watch[n++] = (unsigned)strtoul(e, (char**)&e, 0) & ~0xFu;
+-            while (*e == ',' || *e == ' ') e++;
+-        }
+-        g_spu_ls_watch_n = n;
+-    }
+-    *out_n = g_spu_ls_watch_n;
+-    return s_spu_ls_watch;
+-}
+-void spu_ls_watch_slow(uint32_t lsa, int is_write, const uint8_t* p, uint32_t pc, uint32_t lr)
+-{
+-    int n; spu_ls_watch_list(&n);
+-    if (!n) return;
+-    uint32_t a = lsa & (SPU_LS_MASK & ~0xFu);
+-    for (int i = 0; i < g_spu_ls_watch_n; i++) {
+-        if (s_spu_ls_watch[i] == a) {
+-            fprintf(stderr, "[spu-watch %s 0x%05X pc=0x%05X lr=0x%05X] "
+-                "%02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X\n",
+-                is_write ? "WR" : "rd", a, pc, lr,
+-                p[0],p[1],p[2],p[3], p[4],p[5],p[6],p[7],
+-                p[8],p[9],p[10],p[11], p[12],p[13],p[14],p[15]);
+-            fflush(stderr);
+-            break;
+-        }
+-    }
+-}
+-
++/* Called after an SPU atomic commits a 128-byte line, with the lock-line lock
++ * released. cellSpurs sets it so a PPU blocked in cellSpursEventFlagWait wakes
++ * when a task sets the flag, instead of on its next 2 ms poll. */
++void (*g_spu_line_commit_hook)(uint32_t line) = 0;
++/* spu_workload.c: wakes tasks parked in WAIT_SIGNAL on that line's taskset. */
++void spu_taskset_line_committed(uint32_t line);
++/* SPU_LS_WATCH=0x1BE80[,0x927D80...]: watch up to 4 16-byte LS lines (reads
++ * and writes) in every SPU image. See spu_ls_watch_hit2 for the fast path. */
++#define SPU_WATCH_MAX 4
++int g_spu_ls_watch_n = -1;
++static unsigned s_spu_ls_watch[SPU_WATCH_MAX];
++unsigned* spu_ls_watch_list(int* out_n)
++{
++    if (g_spu_ls_watch_n < 0) {
++        int n = 0; const char* e = getenv("SPU_LS_WATCH");
++        while (e && *e && n < SPU_WATCH_MAX) {
++            s_spu_ls_watch[n++] = (unsigned)strtoul(e, (char**)&e, 0) & ~0xFu;
++            while (*e == ',' || *e == ' ') e++;
++        }
++        g_spu_ls_watch_n = n;
++    }
++    *out_n = g_spu_ls_watch_n;
++    return s_spu_ls_watch;
++}
++void spu_ls_watch_slow(uint32_t lsa, int is_write, const uint8_t* p, uint32_t pc, uint32_t lr)
++{
++    int n; spu_ls_watch_list(&n);
++    if (!n) return;
++    uint32_t a = lsa & (SPU_LS_MASK & ~0xFu);
++    for (int i = 0; i < g_spu_ls_watch_n; i++) {
++        if (s_spu_ls_watch[i] == a) {
++            fprintf(stderr, "[spu-watch %s 0x%05X pc=0x%05X lr=0x%05X] "
++                "%02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X\n",
++                is_write ? "WR" : "rd", a, pc, lr,
++                p[0],p[1],p[2],p[3], p[4],p[5],p[6],p[7],
++                p[8],p[9],p[10],p[11], p[12],p[13],p[14],p[15]);
++            fflush(stderr);
++            break;
++        }
++    }
++}
++
+ static SPU_TLS jmp_buf s_spu_halt_env;
+ static SPU_TLS int     s_spu_halt_armed = 0;
+ 
+@@ -224,7 +224,7 @@ int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
+      * recursion guard halted the SPU at 2000 after a few minutes of idling. */
+     ctx->host_depth = 0;
+     ctx->irq_frame = 0;
+-    ctx->drain_ret_pc = 0;
++    ctx->drain_ret_pc = 0;
+     /* Nest-safe: a job run synchronously from inside another SPU's execution
+      * re-enters here on the same host thread. The halt target is per-thread,
+      * so save the outer one and put it back on the way out -- otherwise the
+@@ -745,10 +745,10 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
+                       ctx->gpr[0]._u32[0] & SPU_LS_MASK, ea); }
+         ctx->resv_valid = 0;                           /* reservation consumed */
+         spu_lockline_unlock();
+-        if (ctx->atomic_stat == 0) {
+-            spu_taskset_line_committed(ea & ~127u);
+-            if (g_spu_line_commit_hook) g_spu_line_commit_hook(ea & ~127u);
+-        }
++        if (ctx->atomic_stat == 0) {
++            spu_taskset_line_committed(ea & ~127u);
++            if (g_spu_line_commit_hook) g_spu_line_commit_hook(ea & ~127u);
++        }
+         return 1;
+ 
+     case MFC_PUTLLUC_CMD:
+@@ -766,7 +766,7 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
+         ctx->resv_valid = 0; ctx->atomic_stat = 2;   /* PUTLLUC complete */
+         spu_lockline_unlock();
+         spu_taskset_line_committed(ea & ~127u);
+-        if (g_spu_line_commit_hook) g_spu_line_commit_hook(ea & ~127u);
++        if (g_spu_line_commit_hook) g_spu_line_commit_hook(ea & ~127u);
+         return 1;
+ 
+     default:
+@@ -1865,9 +1865,14 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
+             }
+             yz_lockstep_block_begin(ctx);
+             spu_taskset_parked_add(ts, tid, wobj);
+-            spu_taskset_wait_signal(ts, tid);
++            const int stale = spu_taskset_wait_signal(ts, tid);
+             spu_taskset_parked_del(ts, tid);
+             yz_lockstep_block_end(ctx);
++            if (stale) {            /* its taskset was shut down: the task is gone */
++                ctx->status = SPU_STATUS_STOPPED_BY_STOP;
++                spu_halt(ctx);
++                return;
++            }
+             spu_ef_deliver_owed(ctx, wobj);
+         }
+         ctx->gpr[3]._u32[0] = 0;
+@@ -2038,10 +2043,10 @@ static int spu_smc_microstep(spu_context* ctx)
+                       " microstep set -- handing to the interpreter (steps=%d)\n",
+                       ctx->image_id, pc, w, steps); }
+         ctx->pc = pc;
+-        /* Stop at the drain's return point too: it sits mid-function, so it is
+-         * no lifted entry, and a job's return would otherwise run on through
+-         * the caller's code (GH3's song-freeze; see drain_ret_pc). */
+-        return spu_interp_run_until(ctx, pc, ctx->drain_ret_pc) ? 1 : 0;
++        /* Stop at the drain's return point too: it sits mid-function, so it is
++         * no lifted entry, and a job's return would otherwise run on through
++         * the caller's code (GH3's song-freeze; see drain_ret_pc). */
++        return spu_interp_run_until(ctx, pc, ctx->drain_ret_pc) ? 1 : 0;
+     }
+     { static int _n = 0; if (_n++ < 4)
+         fprintf(stderr, "[spu-smc] microstep img=%d runaway (4096 steps from 0x%05X)\n",
+diff --git a/runtime/spu/spu_workload.c b/runtime/spu/spu_workload.c
+index 6a19d5b..a4cf61e 100644
+--- a/runtime/spu/spu_workload.c
++++ b/runtime/spu/spu_workload.c
+@@ -252,6 +252,7 @@ typedef struct {
+     int                 have_r3;
+     uint32_t            taskset_ea;   /* captured race-free at dispatch (globals get clobbered) */
+     uint32_t            taskid;
++    uint32_t            taskset_gen;  /* generation of the taskset when the task was created */
+ } spu_async_job;
+ 
+ /* ---- Persistent per-taskset local store (LBP_PERSIST_LS) ------------------
+@@ -381,6 +382,27 @@ static uint8_t* ts_running(uint32_t taskset_ea)
+ static void ts_lock(void)   { while (InterlockedExchange(&s_ts_lock, 1)) Sleep(0); }
+ static void ts_unlock(void) { InterlockedExchange(&s_ts_lock, 0); }
+ 
++/* Taskset generations. A title that shuts a taskset down and creates another one at the same
++ * address leaves the old tasks' host threads parked in WAIT_SIGNAL: the HLE has no way to stop
++ * them, and they would answer signals meant for the new taskset and, when they finally exit,
++ * clear the new taskset's task bits. cellSpursShutdownTaskset bumps the generation of its
++ * address; a task remembers the generation it was created in and ends itself once it differs. */
++#define TS_GEN_MAX 32
++static struct { volatile uint32_t ea; volatile uint32_t gen; } s_tsgen[TS_GEN_MAX];
++
++static uint32_t spu_taskset_generation(uint32_t ea)
++{
++    for (int i = 0; i < TS_GEN_MAX; i++) if (s_tsgen[i].ea == ea) return s_tsgen[i].gen;
++    return 0;
++}
++
++static _Thread_local uint32_t s_tls_task_ea, s_tls_task_gen;
++
++static int spu_task_is_stale(void)
++{
++    return s_tls_task_ea && spu_taskset_generation(s_tls_task_ea) != s_tls_task_gen;
++}
++
+ static void spu_taskset_mark(uint32_t taskset_ea, uint32_t t, int on)
+ {
+     if (!taskset_ea || t >= 128) return;
+@@ -429,6 +451,7 @@ static void spu_taskset_task_exited(uint32_t taskset_ea, uint32_t done_task)
+ 
+ static void spu_async_run(spu_async_job* j)
+ {
++    s_tls_task_ea = j->taskset_ea; s_tls_task_gen = j->taskset_gen;
+     spu_taskset_mark(j->taskset_ea, j->taskid, 1);
+     /* Persistent per-taskset LS: acquire (+serialize) the taskset's LS, or fall
+      * back to a fresh per-dispatch LS when disabled / no taskset. */
+@@ -769,7 +792,7 @@ static void spu_async_run(spu_async_job* j)
+             fprintf(stderr, "[spu_workload] async image=%d RETURNED rc=%d "
+                     "(job ran to completion, did not loop)\n", j->image_id, rc);
+             spu_serial_release();
+-            if (j->taskset_ea) spu_taskset_task_exited(j->taskset_ea, j->taskid);
++            if (j->taskset_ea && !spu_task_is_stale()) spu_taskset_task_exited(j->taskset_ea, j->taskid);
+         }
+         /* Persistent LS is retained in its taskset slot for the next task; a
+          * per-dispatch LS is freed. */
+@@ -906,16 +929,25 @@ void spu_taskset_signal_task(uint32_t taskset_ea, uint32_t taskId);  /* defined
+ static volatile uint64_t s_parked[SPU_PARKED_MAX];   /* (taskset<<32)|(taskId+1), 0 = free */
+ static volatile uint32_t s_parked_obj[SPU_PARKED_MAX];  /* LS[0x2FD0] wait object, 0 = unknown */
+ 
++/* This thread's own entry in s_parked. A game may recreate a taskset at the same address while
++ * the old task's host thread is still parked (the HLE ShutdownTaskset does not stop it), so two
++ * parked threads can share one (taskset, task) key. Looking an entry up by key then hands the
++ * newer thread the older one's wait object, and it never wakes on its own queue. */
++static _Thread_local int s_tls_parked_slot = -1;
++
+ void spu_taskset_parked_add(uint32_t taskset_ea, uint32_t taskId, uint32_t wait_obj)
+ {
+     uint64_t key = ((uint64_t)taskset_ea << 32) | (uint64_t)(taskId + 1);
+     for (int i = 0; i < SPU_PARKED_MAX; i++)
+-        if (s_parked[i] == 0) { s_parked_obj[i] = wait_obj; s_parked[i] = key; return; }
++        if (s_parked[i] == 0) { s_parked_obj[i] = wait_obj; s_parked[i] = key; s_tls_parked_slot = i; return; }
+ }
+ 
+ void spu_taskset_parked_del(uint32_t taskset_ea, uint32_t taskId)
+ {
+     uint64_t key = ((uint64_t)taskset_ea << 32) | (uint64_t)(taskId + 1);
++    const int mine = s_tls_parked_slot;
++    s_tls_parked_slot = -1;
++    if (mine >= 0 && s_parked[mine] == key) { s_parked[mine] = 0; return; }
+     for (int i = 0; i < SPU_PARKED_MAX; i++)
+         if (s_parked[i] == key) { s_parked[i] = 0; return; }
+ }
+@@ -1069,9 +1101,62 @@ void spu_taskset_line_committed(uint32_t line)
+     }
+ }
+ 
++/* A task parks in WAIT_SIGNAL with a lock-free queue as its wait object (LS[0x2FDC], the
++ * queue address with flag bits) when it popped an empty queue. On real SPURS the queue
++ * line records the parked task (waiting-list slots in push2/hs1) and the producer signals
++ * exactly that (workload, task). The HLE kernel keeps no such list, so a push signalled
++ * whichever task the line's zeroed slot named (workload 0, task 0): every other queue
++ * consumer slept forever. Wake on the queue state instead, which is what the signal means:
++ * an ANY2ANY CellSyncLFQueue (direction 3, initialised) holds data when the completed push
++ * pointer (u16 @+0x08) differs from the pop pointer (u16 @+0x00). */
++static int spu_wait_obj_queue_ready(uint32_t obj)
++{
++    extern uint8_t* vm_base;
++    if (!obj || (obj & 0x7Fu)) return 0;                       /* a queue line is 128-aligned */
++    uint32_t dir = ((uint32_t)vm_base[obj+0x24] << 24) | ((uint32_t)vm_base[obj+0x25] << 16) |
++                   ((uint32_t)vm_base[obj+0x26] << 8)  |  (uint32_t)vm_base[obj+0x27];
++    uint32_t init = ((uint32_t)vm_base[obj+0x2C] << 24) | ((uint32_t)vm_base[obj+0x2D] << 16) |
++                    ((uint32_t)vm_base[obj+0x2E] << 8)  |  (uint32_t)vm_base[obj+0x2F];
++    if (dir != 3 || init != 2) return 0;
++    uint16_t popped = (uint16_t)((vm_base[obj+0x00] << 8) | vm_base[obj+0x01]);
++    uint16_t pushed = (uint16_t)((vm_base[obj+0x08] << 8) | vm_base[obj+0x09]);
++    return popped != pushed;
++}
++
++static uint32_t spu_parked_wait_obj(uint32_t taskset_ea, uint32_t taskId)
++{
++    uint64_t key = ((uint64_t)taskset_ea << 32) | (uint64_t)(taskId + 1);
++    if (s_tls_parked_slot >= 0 && s_parked[s_tls_parked_slot] == key) return s_parked_obj[s_tls_parked_slot];
++    for (int i = 0; i < SPU_PARKED_MAX; i++)
++        if (s_parked[i] == key) return s_parked_obj[i];
++    return 0;
++}
++
++/* cellSpursShutdownTaskset: the tasks created so far in `taskset_ea` are gone. Wake the parked
++ * ones; each sees its generation is stale and ends. */
++void spu_taskset_bump_generation(uint32_t taskset_ea)
++{
++    if (!taskset_ea) return;
++    int slot = -1;
++    for (int i = 0; i < TS_GEN_MAX; i++) if (s_tsgen[i].ea == taskset_ea) { slot = i; break; }
++    if (slot < 0) for (int i = 0; i < TS_GEN_MAX; i++) if (!s_tsgen[i].ea) { slot = i; s_tsgen[i].ea = taskset_ea; break; }
++    if (slot < 0) return;
++    s_tsgen[slot].gen++;
++#ifdef _WIN32
++    AcquireSRWLockExclusive(&s_sig_lock);
++    WakeAllConditionVariable(&s_sig_cv);
++    ReleaseSRWLockExclusive(&s_sig_lock);
++#else
++    pthread_mutex_lock(&s_sig_lock);
++    pthread_cond_broadcast(&s_sig_cv);
++    pthread_mutex_unlock(&s_sig_lock);
++#endif
++}
++
+ /* WAIT_SIGNAL from the task side (runs ON the task's host thread, called by
+  * the 0xA70 taskset-syscall intercept). Consumes a pending signal or blocks
+- * until one is delivered. Returns 0 (the syscall's success rc). */
++ * until one is delivered. Returns 0 (the syscall's success rc), or 1 when the task belongs to a
++ * taskset that has been shut down since (the caller must end it). */
+ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
+ {
+     if (!taskset_ea || taskId >= 128) return 0;
+@@ -1130,8 +1215,10 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
+     spu_serial_release();
+ #ifdef _WIN32
+     AcquireSRWLockExclusive(&s_sig_lock);
+-    while (!spurs_bitset_test(taskset_ea + CSTS_SIGNALLED, taskId)) {
+-        if (!SleepConditionVariableSRW(&s_sig_cv, &s_sig_lock, 1000, 0)) {
++    const uint32_t wait_obj = spu_parked_wait_obj(taskset_ea, taskId);
++    while (!spurs_bitset_test(taskset_ea + CSTS_SIGNALLED, taskId) &&
++           !spu_wait_obj_queue_ready(wait_obj) && !spu_task_is_stale()) {
++        if (!SleepConditionVariableSRW(&s_sig_cv, &s_sig_lock, wait_obj ? 2 : 1000, 0)) {
+             static int _n = 0;
+             if (++secs && _n < 16) { _n++;
+                 fprintf(stderr, "[spu_workload] task %u (taskset 0x%08X) sleeping "
+@@ -1139,12 +1226,16 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
+             if (drain && secs >= drain) { drained = 1; break; }
+         }
+     }
+-    if (!drained) spurs_bitset_clear(taskset_ea + CSTS_SIGNALLED, taskId);
++    if (!drained && !spu_task_is_stale()) spurs_bitset_clear(taskset_ea + CSTS_SIGNALLED, taskId);
+     ReleaseSRWLockExclusive(&s_sig_lock);
+ #else
+     pthread_mutex_lock(&s_sig_lock);
+-    while (!spurs_bitset_test(taskset_ea + CSTS_SIGNALLED, taskId)) {
+-        struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += 1;
++    const uint32_t wait_obj = spu_parked_wait_obj(taskset_ea, taskId);
++    while (!spurs_bitset_test(taskset_ea + CSTS_SIGNALLED, taskId) &&
++           !spu_wait_obj_queue_ready(wait_obj) && !spu_task_is_stale()) {
++        struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
++        if (wait_obj) { ts.tv_nsec += 2000000; if (ts.tv_nsec >= 1000000000L) { ts.tv_nsec -= 1000000000L; ts.tv_sec++; } }
++        else ts.tv_sec += 1;
+         if (pthread_cond_timedwait(&s_sig_cv, &s_sig_lock, &ts) != 0) {
+             static int _n = 0;
+             if (++secs && _n < 16) { _n++;
+@@ -1153,7 +1244,7 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
+             if (drain && secs >= drain) { drained = 1; break; }
+         }
+     }
+-    if (!drained) spurs_bitset_clear(taskset_ea + CSTS_SIGNALLED, taskId);
++    if (!drained && !spu_task_is_stale()) spurs_bitset_clear(taskset_ea + CSTS_SIGNALLED, taskId);
+     pthread_mutex_unlock(&s_sig_lock);
+ #endif
+     if (drained) { static int _d = 0; if (_d++ < 24)
+@@ -1162,7 +1253,7 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
+     spu_serial_acquire();       /* resume: re-take the serial lock */
+     { extern unsigned long long ps3_ms_now(void);
+       s_wait_exit_ms = ps3_ms_now(); }   /* stamp for the next entry's ran= */
+-    return 0;
++    return spu_task_is_stale() ? 1 : 0;   /* 1: the task's taskset was shut down, the caller ends the task */
+ }
+ 
+ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
+@@ -1211,7 +1302,8 @@ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
+      * the next CreateTask overwriting the single-slot globals -- with two audio
+      * tasks that made both run task 1's descriptor. */
+     { extern uint32_t g_ydkj_real_taskset_ea, g_ydkj_real_taskid;
+-      j->taskset_ea = g_ydkj_real_taskset_ea; j->taskid = g_ydkj_real_taskid; }
++      j->taskset_ea = g_ydkj_real_taskset_ea; j->taskid = g_ydkj_real_taskid;
++      j->taskset_gen = spu_taskset_generation(j->taskset_ea); }
+     /* Capture the SPURS task r3 NOW (PPU thread, synchronous) from the game's
+      * descriptor at eaContext+0x10 = {0x40-marker handle, workload EAs}; the
+      * async SPU thread reading it later would race the PPU stack. word1 is
