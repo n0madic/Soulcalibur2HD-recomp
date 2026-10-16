@@ -1,0 +1,144 @@
+Draw engine: keep what a draw works out from the vertex program, and store guest rows a word at a time.
+
+- Every draw walked the resident vertex program to its end, byte-hashed all of it for the pipeline key and ran the
+  input analysis again: in a fight, hundreds of draws a frame over the same few KB of ucode. Its length, hash and
+  input mask are now kept until its start changes or a SET_TRANSFORM_PROGRAM word arrives.
+- Surface pixels stored into guest memory (a 2D transfer's source, a resolve) are converted R,G,B,A -> A,R,G,B a
+  32-bit word at a time instead of byte by byte.
+
+---
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+index 3dd1c9a..bb4d569 100644
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -175,6 +175,15 @@ static struct {
+     u32 last_present_surface;
+     u32 last_flip_buffer;
+     u64 write_serial;       /* orders colour and depth writes to one address */
++    u32 vp_serial;          /* bumped by every transform program upload word */
++    /* What the draws work out from the resident vertex program -- its length, the hash its pipelines are keyed on,
++     * the inputs it reads -- kept while neither its start nor the program changes: hundreds of draws a frame used
++     * to walk and byte-hash up to 8 KB of ucode each. */
++    struct {
++        int valid, hashed, analysed;
++        u32 start, serial, instrs, input_mask;
++        u64 hash;
++    } vpm;
+     u64 readback_epoch;     /* bumped by every colour draw, clear or write: invalidates the readback copy */
+ 
+     /* staging: decoded texture levels, the constant blocks, the index list */
+@@ -676,6 +685,19 @@ static u32 eng_surface_at(u32 location, u32 offset, u32 pitch, u32* x, u32* y)
+ static u8* s_coherence_rows;
+ static u32 s_coherence_cap;
+ 
++/* One row of host R,G,B,A pixels stored as the guest's A,R,G,B words (R,G,B,A when the texture decoder reads them
++ * that way), a word at a time: a whole 1280x720 picture goes through here every frame. */
++static void eng_store_guest_row(u8* dst, const u8* src, u32 w, int rgba)
++{
++    if (rgba) { memcpy(dst, src, (size_t)w * 4u); return; }
++    for (u32 c = 0; c < w; c++) {
++        u32 px;
++        memcpy(&px, src + (size_t)c * 4u, 4);
++        px = (px << 8) | (px >> 24);              /* bytes R,G,B,A -> A,R,G,B (little-endian host) */
++        memcpy(dst + (size_t)c * 4u, &px, 4);
++    }
++}
++
+ /* RSX_ENGINE_COHERENCE_LOG=<n>: log the first n transfers the engine syncs,
+  * with how many non-zero pixels moved -- the question when a composite comes
+  * out black is whether the GPU surface had anything in it. */
+@@ -755,10 +777,7 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
+         u8* dst = (u8*)eng_guest_ptr(NULL, location, offset + r * pitch, w * 4u);
+         if (!dst) return;
+         const u8* src = rows + (size_t)r * w * 4u;
+-        for (u32 c = 0; c < w; c++, src += 4, dst += 4) {
+-            if (rgba) { dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3]; }
+-            else      { dst[0] = src[3]; dst[1] = src[0]; dst[2] = src[1]; dst[3] = src[2]; }
+-        }
++        eng_store_guest_row(dst, src, w, rgba);
+     }
+ }
+ 
+@@ -827,11 +846,7 @@ static void eng_resolve_to_guest(eng_resolve* r)
+                 u8* dst = (u8*)eng_guest_ptr(NULL, r->location,
+                                              r->offset + (q->y + y) * r->pitch + q->x * 4u, q->w * 4u);
+                 if (!dst) break;
+-                const u8* src = rows + ((size_t)(q->y - y0 + y) * bw + (q->x - x0)) * 4u;
+-                for (u32 c = 0; c < q->w; c++, src += 4, dst += 4) {
+-                    if (rgba) { dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3]; }
+-                    else      { dst[0] = src[3]; dst[1] = src[0]; dst[2] = src[1]; dst[3] = src[2]; }
+-                }
++                eng_store_guest_row(dst, rows + ((size_t)(q->y - y0 + y) * bw + (q->x - x0)) * 4u, q->w, rgba);
+             }
+         }
+         if (eng_coherence_log())
+@@ -1002,10 +1017,7 @@ int rsx_draw_engine_resolve_read(u32 src_loc, u32 src_offset, u32 src_pitch, u32
+         u8* dst = (u8*)eng_guest_ptr(NULL, dst_loc, dst_offset + r * dst_pitch, w * 4u);
+         if (!dst) return 1;
+         const u8* src = rows + (size_t)r * w * 4u;
+-        for (u32 c = 0; c < w; c++, src += 4, dst += 4) {
+-            if (rgba) { dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3]; }
+-            else      { dst[0] = src[3]; dst[1] = src[0]; dst[2] = src[1]; dst[3] = src[2]; }
+-        }
++        eng_store_guest_row(dst, src, w, rgba);
+     }
+     /* Cached textures that contain the written rectangle are re-hashed on their next use. */
+     for (u32 i = 0; i < g.n_textures; i++) {
+@@ -1514,8 +1526,14 @@ static int eng_guest_programs(const u8** out_vp, u32* out_vp_instrs,
+     const u32 start = rsx_dsp_vp_start(&g.rsx);
+     if (start < RSX_DSP_VP_INSTR) {
+         vp_uc = (const u8*)(g.rsx.vp + start * 4);
+-        vp_instrs = rsx_vp_program_size_instrs(
+-            vp_uc, (RSX_DSP_VP_INSTR - start) * 16u);
++        if (!g.vpm.valid || g.vpm.start != start || g.vpm.serial != g.vp_serial) {
++            g.vpm.valid = 1;
++            g.vpm.hashed = g.vpm.analysed = 0;
++            g.vpm.start = start;
++            g.vpm.serial = g.vp_serial;
++            g.vpm.instrs = rsx_vp_program_size_instrs(vp_uc, (RSX_DSP_VP_INSTR - start) * 16u);
++        }
++        vp_instrs = g.vpm.instrs;
+     }
+ 
+     /* A zero SET_SHADER_PROGRAM is "none", not "the program at offset 0": the
+@@ -1547,10 +1565,15 @@ static void eng_vertex_layout(rsx_vertex_layout_plan* layout)
+     const u8* uc = NULL;
+     u32 instrs = 0;
+     if (eng_guest_programs(&uc, &instrs, NULL, NULL)) {
+-        rsx_vp_input_analysis analysis = { 0xFFFFu, 0 };
+-        if (rsx_vp_analyze_inputs(uc, instrs * 16u, &analysis) == (int)instrs &&
+-            analysis.exact && analysis.input_mask)
+-            mask = analysis.input_mask;
++        if (!g.vpm.analysed) {
++            rsx_vp_input_analysis analysis = { 0xFFFFu, 0 };
++            g.vpm.input_mask = 0xFFFFu;
++            if (rsx_vp_analyze_inputs(uc, instrs * 16u, &analysis) == (int)instrs &&
++                analysis.exact && analysis.input_mask)
++                g.vpm.input_mask = analysis.input_mask;
++            g.vpm.analysed = 1;
++        }
++        mask = g.vpm.input_mask;
+     }
+     rsx_vertex_layout_plan_init(layout, mask);
+ }
+@@ -1663,7 +1686,11 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+         static const u32 fixed_tag = 0x4E464958u;   /* "XIFN" */
+         key = eng_fnv1a(&fixed_tag, sizeof fixed_tag, key);
+     } else {
+-        key = eng_fnv1a(vp_uc, vp_instrs * 16u, key);
++        if (!g.vpm.hashed) {
++            g.vpm.hash = eng_fnv1a(vp_uc, vp_instrs * 16u, 1469598103934665603ull);
++            g.vpm.hashed = 1;
++        }
++        key = eng_fnv1a(&g.vpm.hash, sizeof g.vpm.hash, key);
+         key = rsx_fp_structural_hash(fp_uc, fp_size, key);
+         if (!key) return 0;
+         const u32 fp_ctrl_key = fp_ctrl & 0x40u;
+@@ -2785,6 +2812,7 @@ void rsx_draw_engine_method(u32 method, u32 arg)
+      * (0xE9xx, 0xEBxx) encode the subchannel bits as part of the address;
+      * preserve them with the wider mask. */
+     u32 m = (method >= 0xE000u) ? (method & 0xFFFCu) : (method & 0x1FFCu);
++    if (m >= 0x0B80u && m < 0x0C00u) g.vp_serial++;     /* SET_TRANSFORM_PROGRAM: the program is changing */
+     rsx_dispatch_method(&g.rsx, m, arg);
+ }
+ 

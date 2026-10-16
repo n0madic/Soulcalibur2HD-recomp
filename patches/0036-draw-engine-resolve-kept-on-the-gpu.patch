@@ -1,0 +1,447 @@
+Draw engine: keep a supersampled resolve on the GPU.
+
+Soulcalibur II HD renders its scene into a 2x supersampled surface, resolves it with six 512x512 NV3089 2:1 tiles
+into VRAM (0x0C900000, 1280x720) and draws that to the display buffer with one full-screen pass. Every frame the
+engine read the whole scene back (a flush and wait mid-frame), stored it into guest memory, and the full-screen pass
+then re-hashed, decoded and uploaded the same 3.6 MB as a texture.
+
+- A resolve tile is now copied on the GPU (new optional backend call color_target_copy; Vulkan: vkCmdCopyImage in
+  the batch) into a colour target the engine keeps for that guest image, with the rectangles that are newer there
+  than in guest memory. A texture unit reading exactly that image (linear A8R8G8B8, its address, pitch and size,
+  one level) with all of it resolved samples the target through the unit's crossbar.
+- Guest memory gets the pixels when anything else reads or writes those bytes through the engine: a texture of
+  another shape, a 2D transfer's source or destination (rsx_draw_engine_guest_access, called by NV3089), a surface
+  seed or a depth store. A CPU read of the resolved bytes is not seen; RSX_ENGINE_GPU_RESOLVE=0 restores the store of
+  every resolve. Checked on the same frames against the old path: identical output.
+
+---
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 7a3afb4..e3032b5 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -986,6 +986,20 @@ static void nv3089_engine_wrote(u32 dst_pitch, u32 x0, u32 y0, u32 x1, u32 y1)
+                                 x1 - x0, y1 - y0);
+ }
+ 
++/* Guest bytes the copy below reads (the source rows) and writes (the clipped destination rows): the engine stores a
++ * resolve it kept on the GPU there first. */
++static void nv3089_engine_access(u32 in_pitch, u32 out_h, u32 dst_pitch, u32 y0, u32 y1)
++{
++    if (!rsx_draw_engine_enabled() || !out_h) return;
++    const u32 v0 = s_nv3089.in_uv >> 16;   /* 12.4 */
++    const u32 sy1 = (u32)((((u64)v0 << 8) + (u64)(out_h - 1) * s_nv3089.dt_dy) >> 20);
++    rsx_draw_engine_guest_access((s_nv3089.src_dma != 0xFEED0001u) ? RSX_LOCATION_LOCAL : RSX_LOCATION_MAIN,
++                                 s_nv3089.in_off, (sy1 + 1u) * in_pitch);
++    if (y1 > y0)
++        rsx_draw_engine_guest_access((s_gcm2d.dst_dma != 0xFEED0001u) ? RSX_LOCATION_LOCAL : RSX_LOCATION_MAIN,
++                                     s_gcm2d.dst_offset + y0 * dst_pitch, (y1 - y0) * dst_pitch);
++}
++
+ static void nv3089_blit(void)
+ {
+     u32 out_w = s_nv3089.out_sz & 0xFFFF, out_h = s_nv3089.out_sz >> 16;
+@@ -1061,6 +1075,9 @@ static void nv3089_blit(void)
+         u32 dst2 = cellGcmResolveLocated(1, s_nv309e.offset);
+         u32 u0b = s_nv3089.in_uv & 0xFFFF, v0b = s_nv3089.in_uv >> 16;
+         nv3089_engine_read(in_pitch, out_w, out_h);
++        nv3089_engine_access(in_pitch, out_h, dst_pitch, 0, 0);
++        if (rsx_draw_engine_enabled())
++            rsx_draw_engine_guest_access(RSX_LOCATION_LOCAL, s_nv309e.offset, out_w * out_h * 4u);
+         /* Copy words verbatim through raw pointers rather than vm_read32/
+          * vm_write32: this moves ~500k pixels per blit and several blits run per
+          * frame, and the two byte swaps would cancel anyway. */
+@@ -1146,6 +1163,9 @@ static void nv3089_blit(void)
+             return;
+     }
+     if (bpp == 4) nv3089_engine_read(in_pitch, out_w, out_h);
++    { const u32 y0 = out_y > cy0 ? out_y : cy0;
++      const u32 y1 = (out_y + out_h < cy1) ? out_y + out_h : cy1;
++      nv3089_engine_access(in_pitch, out_h, dst_pitch, y0, y1); }
+     /* An unscaled copy is a row copy: a 1280x720 one per frame (this title copies its front buffer out each frame)
+      * cost a read and a write accessor call per pixel. The two byte swaps of the per-pixel path cancel, so a row is
+      * a block store of the source bytes; vm_memcpy_to breaks SPU reservations per line as vm_write32 would. Overlap,
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+index cca6296..3dd1c9a 100644
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -133,6 +133,21 @@ typedef struct {
+     int valid;
+ } eng_display_buffer;
+ 
++/* A resolve kept on the GPU (rsx_draw_engine_resolve_read): guest bytes at
++ * `offset` laid out as a w x h image of 32-bit pixels `pitch` apart, whose
++ * resolved pixels live in the colour target `handle` instead of guest memory.
++ * `rects` are the rectangles resolved since guest memory last got a copy,
++ * disjoint; none means guest memory is current. */
++#define ENG_MAX_RESOLVES      4
++#define ENG_MAX_RESOLVE_RECTS 16
++typedef struct { u32 x, y, w, h; } eng_rect;
++typedef struct {
++    u32 location, offset, pitch, w, h;
++    u32 handle;
++    eng_rect rects[ENG_MAX_RESOLVE_RECTS];
++    u32 n_rects;
++} eng_resolve;
++
+ static struct {
+     const rsx_draw_backend* be;
+     int ready;
+@@ -150,6 +165,8 @@ static struct {
+     eng_pipeline pipelines[ENG_MAX_PIPELINES];
+     u32 n_pipelines;
+     eng_display_buffer display_buffers[8];
++    eng_resolve resolves[ENG_MAX_RESOLVES];
++    u32 n_resolves;
+ 
+     u32 frames;
+     u64 texture_use_serial;
+@@ -172,6 +189,8 @@ static struct {
+     rsx_fp_constant_block fp_constants;
+ } g;
+ 
++static void eng_resolves_sync(u32 location, u32 offset, u32 bytes);
++
+ /* The decompilers' HLSL. The VP decompiler builds bodies up to 192 KB. */
+ static char s_vs_hlsl[256 * 1024];
+ static char s_ps_hlsl[256 * 1024];
+@@ -511,6 +530,7 @@ static const void* eng_surface_seed(u32 location, u32 offset, u32 w, u32 h,
+     /* A8R8G8B8 with the LN bit: a surface is linear, never swizzled. */
+     rsx_texture_layout(0x85u | 0x20u, w, h, &tl);
+     if (!tl.face_bytes || !tl.dst_row_bytes) return NULL;
++    eng_resolves_sync(location, offset, tl.face_bytes);
+     const u8* src = eng_guest_ptr(NULL, location, offset, tl.face_bytes);
+     if (!src) return NULL;
+     const u32 bytes = tl.dst_row_bytes * tl.rows;
+@@ -712,6 +732,7 @@ static int eng_readback_rows(const eng_surface* s, u32 x, u32 y, u32 w, u32 h, u
+ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32 h)
+ {
+     if (!g.ready || !g.be->readback || !pitch || !w || !h) return;
++    eng_resolves_sync(location, offset, (h - 1u) * pitch + w * 4u);
+     u32 x = 0, y = 0;
+     const u32 slot = eng_surface_at(location, offset, pitch, &x, &y);
+     if (slot == ENG_INVALID) {
+@@ -741,6 +762,186 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
+     }
+ }
+ 
++/* ---- resolves kept on the GPU ------------------------------------------- */
++/*
++ * A title resolving its supersampled scene into VRAM every frame and drawing
++ * the result to the screen with one full-screen pass used to cost a whole
++ * readback of the scene, its store into guest memory, and a re-hash, decode and
++ * upload of the same pixels as a texture -- with the GPU idle while the frame
++ * thread waited for it. Instead the resolved pixels are copied on the GPU into a
++ * colour target the engine keeps for that guest range (eng_resolve), and a
++ * texture unit naming exactly that image samples the target. Guest memory gets
++ * the pixels only when something else reads those bytes through the engine: a
++ * texture of another shape or format, a 2D transfer, a surface store. What it
++ * cannot see is the CPU reading them directly; RSX_ENGINE_GPU_RESOLVE=0 keeps
++ * the old store of every resolve for a title that does.
++ */
++
++static int eng_gpu_resolve_enabled(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("RSX_ENGINE_GPU_RESOLVE"); on = !(e && e[0] == '0'); }
++    return on && g.be->color_target_copy && g.be->readback;
++}
++
++static int eng_resolve_overlaps(const eng_resolve* r, u32 location, u32 offset, u32 bytes)
++{
++    if (!r->handle || r->location != location || !bytes) return 0;
++    const u64 lo = r->offset, hi = lo + (u64)r->pitch * r->h;
++    return (u64)offset < hi && (u64)offset + bytes > lo;
++}
++
++/* Cached textures that may cover [offset, offset + bytes) are re-hashed on their next use; a texture's span is not
++ * kept, so one starting up to 8 MB below counts. */
++static void eng_textures_rehash(u32 location, u32 offset, u32 bytes)
++{
++    for (u32 i = 0; i < g.n_textures; i++) {
++        eng_texture* e = &g.textures[i];
++        if (e->location != location) continue;
++        if (e->offset >= offset ? e->offset - offset < bytes : offset - e->offset < 0x800000u)
++            e->last_hash_frame = g.frames - 1u;
++    }
++}
++
++/* Store a resolve's pending rectangles into guest memory, laid out as the CPU copy of the resolve leaves them. */
++static void eng_resolve_to_guest(eng_resolve* r)
++{
++    if (!r->n_rects) return;
++    u32 x0 = r->w, y0 = r->h, x1 = 0, y1 = 0;
++    for (u32 i = 0; i < r->n_rects; i++) {
++        const eng_rect* q = &r->rects[i];
++        if (q->x < x0) x0 = q->x;
++        if (q->y < y0) y0 = q->y;
++        if (q->x + q->w > x1) x1 = q->x + q->w;
++        if (q->y + q->h > y1) y1 = q->y + q->h;
++    }
++    const u32 bw = x1 - x0, bh = y1 - y0;
++    u8* rows = eng_coherence_buffer(bw * 4u * bh);
++    if (rows) {
++        g.be->submit_and_wait(g.be->user, RSX_BE_FLUSH_GUEST_REFERENCE);
++        g.be->readback(g.be->user, r->handle, x0, y0, bw, bh, rows, bw * 4u);
++        const int rgba = rsx_texture_argb_is_rgba();
++        for (u32 i = 0; i < r->n_rects; i++) {
++            const eng_rect* q = &r->rects[i];
++            for (u32 y = 0; y < q->h; y++) {
++                u8* dst = (u8*)eng_guest_ptr(NULL, r->location,
++                                             r->offset + (q->y + y) * r->pitch + q->x * 4u, q->w * 4u);
++                if (!dst) break;
++                const u8* src = rows + ((size_t)(q->y - y0 + y) * bw + (q->x - x0)) * 4u;
++                for (u32 c = 0; c < q->w; c++, src += 4, dst += 4) {
++                    if (rgba) { dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3]; }
++                    else      { dst[0] = src[3]; dst[1] = src[0]; dst[2] = src[1]; dst[3] = src[2]; }
++                }
++            }
++        }
++        if (eng_coherence_log())
++            fprintf(stderr, "[rsx engine] resolve %u:0x%08X %ux%u stored to guest memory (%u rectangles)\n",
++                    r->location, r->offset, r->w, r->h, r->n_rects);
++    }
++    r->n_rects = 0;
++    eng_textures_rehash(r->location, r->offset, r->pitch * r->h);
++}
++
++/* Bring guest memory up to date with every resolve kept on the GPU that overlaps [offset, offset + bytes). */
++static void eng_resolves_sync(u32 location, u32 offset, u32 bytes)
++{
++    for (u32 i = 0; i < g.n_resolves; i++)
++        if (g.resolves[i].n_rects && eng_resolve_overlaps(&g.resolves[i], location, offset, bytes))
++            eng_resolve_to_guest(&g.resolves[i]);
++}
++
++void rsx_draw_engine_guest_access(u32 location, u32 offset, u32 bytes)
++{
++    if (g.ready) eng_resolves_sync(location, offset, bytes);
++}
++
++static void eng_resolve_drop(eng_resolve* r)
++{
++    eng_resolve_to_guest(r);
++    if (r->handle) g.be->color_target_release(g.be->user, r->handle);
++    memset(r, 0, sizeof *r);
++}
++
++/* The resolve for this guest image, created when new. Any other one overlapping its bytes is stored and dropped
++ * first: two GPU copies of one range could not both be current. NULL when no target could be made. */
++static eng_resolve* eng_resolve_get(u32 location, u32 offset, u32 pitch, u32 w, u32 h)
++{
++    for (u32 i = 0; i < g.n_resolves; i++) {
++        eng_resolve* r = &g.resolves[i];
++        if (r->handle && r->location == location && r->offset == offset && r->pitch == pitch &&
++            r->w == w && r->h == h)
++            return r;
++    }
++    eng_resolve* slot = NULL;
++    for (u32 i = 0; i < g.n_resolves; i++) {
++        eng_resolve* r = &g.resolves[i];
++        if (r->handle && !eng_resolve_overlaps(r, location, offset, pitch * h)) continue;
++        eng_resolve_drop(r);
++        if (!slot) slot = r;
++    }
++    if (!slot) {
++        slot = &g.resolves[g.n_resolves < ENG_MAX_RESOLVES ? g.n_resolves++ : 0];
++        eng_resolve_drop(slot);
++    }
++    const u32 handle = g.be->color_target_create(g.be->user, RSX_BE_FMT_R8G8B8A8, w, h, NULL, 0);
++    if (!handle) return NULL;
++    slot->location = location; slot->offset = offset; slot->pitch = pitch;
++    slot->w = w; slot->h = h;
++    slot->handle = handle;
++    slot->n_rects = 0;
++    { static u32 logs = 0; if (logs++ < 8)
++        fprintf(stderr, "[rsx engine] resolve %u:0x%08X %ux%u (pitch %u) kept on the GPU\n",
++                location, offset, w, h, pitch); }
++    return slot;
++}
++
++static u64 eng_resolve_area(const eng_resolve* r)
++{
++    u64 a = 0;
++    for (u32 i = 0; i < r->n_rects; i++) a += (u64)r->rects[i].w * r->rects[i].h;
++    return a;
++}
++
++/* Before rectangle q of a resolve is copied in: 1 when q must then be added to the pending ones, 0 when they
++ * already cover it. Pending rectangles q only partly overlaps are stored into guest memory first, so the set stays
++ * disjoint and exact (what is pending is always newer on the GPU than in guest memory). */
++static int eng_resolve_prepare(eng_resolve* r, const eng_rect* q)
++{
++    if (eng_resolve_area(r) == (u64)r->w * r->h) return 0;      /* all of it is pending */
++    for (u32 i = 0; i < r->n_rects; i++) {
++        const eng_rect* p = &r->rects[i];
++        if (q->x >= p->x && q->y >= p->y && q->x + q->w <= p->x + p->w && q->y + q->h <= p->y + p->h)
++            return 0;
++        if (q->x < p->x + p->w && p->x < q->x + q->w && q->y < p->y + p->h && p->y < q->y + q->h) {
++            eng_resolve_to_guest(r);
++            return 1;
++        }
++    }
++    if (r->n_rects >= ENG_MAX_RESOLVE_RECTS) eng_resolve_to_guest(r);
++    return 1;
++}
++
++/* A texture unit reading a resolve kept on the GPU exactly as it is laid out -- linear A8R8G8B8 at its address and
++ * pitch, its size, one level -- with all of it resolved: the picture itself, through the unit's crossbar. 0 for
++ * anything else, which eng_texture_slot then reads from guest memory, storing the resolve there first. */
++static u32 eng_resolve_texture(const rsx_dsp_texture* t)
++{
++    const u32 base_fmt = t->format & RSX_TEX_FMT_BASE_MASK & ~(u32)RSX_TEX_FMT_UNNORM;
++    if (base_fmt != RSX_TEX_FMT_A8R8G8B8 || !(t->format & RSX_TEX_FMT_LINEAR) || t->cubemap || t->mipmaps > 1)
++        return 0;
++    for (u32 i = 0; i < g.n_resolves; i++) {
++        const eng_resolve* r = &g.resolves[i];
++        if (!r->handle || !r->n_rects || r->location != t->location || r->offset != t->offset ||
++            r->pitch != t->pitch || r->w != t->width || r->h != t->height)
++            continue;
++        if (eng_resolve_area(r) != (u64)r->w * r->h) return 0;
++        const u32 view = g.be->surface_view
++            ? g.be->surface_view(g.be->user, r->handle, t->remap & 0xFFFFu, t->format) : 0;
++        return view ? view : r->handle;
++    }
++    return 0;
++}
++
+ /* A scaled NV3089 blit out of a supersampled colour surface (a resolve). The host renders the
+  * surface at display size (w x h) while the guest laid it out k times wider and taller
+  * (pitch = 4 * k * w, k * h rows, often split over several address ranges), so the k:1 downsample
+@@ -774,6 +975,23 @@ int rsx_draw_engine_resolve_read(u32 src_loc, u32 src_offset, u32 src_pitch, u32
+     u32 w = out_w, h = out_h;
+     if (sx + w > s->w) w = s->w - sx;
+     if (sy + h > s->h) h = s->h - sy;
++    /* Kept on the GPU: the destination is the host picture's own layout when its host pixel (0, 0) is at
++     * dst_offset - (sy rows + sx pixels), which holds for every tile of one resolve. */
++    if (eng_gpu_resolve_enabled() && dst_pitch >= 4u * s->w && dst_offset >= sy * dst_pitch + sx * 4u) {
++        eng_resolve* r = eng_resolve_get(dst_loc, dst_offset - sy * dst_pitch - sx * 4u, dst_pitch, s->w, s->h);
++        const eng_rect q = { sx, sy, w, h };
++        if (r) {
++            const int add = eng_resolve_prepare(r, &q);
++            if (g.be->color_target_copy(g.be->user, r->handle, sx, sy, s->handle, sx, sy, w, h) == 0) {
++                if (add) r->rects[r->n_rects++] = q;
++                if (eng_coherence_log())
++                    fprintf(stderr, "[rsx engine] resolve_read %u:0x%08X k=%u %ux%u <- surface 0x%08X at %u,%u:"
++                                    " on the GPU\n", src_loc, src_offset, k, w, h, s->offset, sx, sy);
++                return 1;
++            }
++        }
++    }
++    eng_resolves_sync(dst_loc, dst_offset, (h - 1u) * dst_pitch + w * 4u);
+     u8* rows = eng_coherence_buffer(w * 4u * h);
+     if (!rows || !eng_readback_rows(s, sx, sy, w, h, rows)) return 0;
+     if (eng_coherence_log())
+@@ -1025,6 +1243,7 @@ static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
+     if (!w || !h || w > ENG_MAX_TEX_DIM || h > ENG_MAX_TEX_DIM) return 0;
+     const u32 span = eng_texture_span(fmt, w, h, levels, pitch, cube);
+     if (!span) return 0;
++    eng_resolves_sync(location, offset, span);
+ 
+     for (u32 i = 0; i < g.n_textures; i++) {
+         eng_texture* e = &g.textures[i];
+@@ -1156,6 +1375,7 @@ static int eng_zdepth_to_guest(u32 slot)
+         s_depth_rows = n;
+         s_depth_cap = w * h;
+     }
++    eng_resolves_sync(z->location, z->offset, (h - 1u) * z->pitch + w * bpp);
+     g.be->submit_and_wait(g.be->user, RSX_BE_FLUSH_GUEST_REFERENCE);
+     if (g.be->depth_readback(g.be->user, z->handle, 0, 0, w, h, s_depth_rows,
+                              w * (u32)sizeof(float)) != 0)
+@@ -1803,6 +2023,7 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
+                 }
+             if (textures[u]) continue;
+         }
++        if ((textures[u] = eng_resolve_texture(&t)) != 0) continue;
+         textures[u] = eng_texture_slot(t.location, t.offset, t.format,
+                                        t.width, t.height, t.mipmaps, t.pitch,
+                                        (int)t.cubemap, t.remap & 0xFFFFu);
+@@ -2539,6 +2760,8 @@ void rsx_draw_engine_shutdown(void)
+         if (g.surfaces[i].handle) g.be->color_target_release(g.be->user, g.surfaces[i].handle);
+     for (u32 i = 0; i < g.n_zdepths; i++)
+         if (g.zdepths[i].handle) g.be->depth_target_release(g.be->user, g.zdepths[i].handle);
++    for (u32 i = 0; i < g.n_resolves; i++)
++        if (g.resolves[i].handle) g.be->color_target_release(g.be->user, g.resolves[i].handle);
+     if (g.ready && g.be->shutdown) g.be->shutdown(g.be->user);
+ 
+     rsx_draw_engine_set_guest_memory(NULL, NULL);
+diff --git a/libs/video/rsx_draw_engine.h b/libs/video/rsx_draw_engine.h
+index 2c0c3df..f858a8f 100644
+--- a/libs/video/rsx_draw_engine.h
++++ b/libs/video/rsx_draw_engine.h
+@@ -218,6 +218,14 @@ typedef struct rsx_draw_backend {
+      * DEPTH16); left NULL, such a texture reads guest memory as it is. */
+     int  (*depth_readback)(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
+                            float* out, u32 out_pitch);
++
++    /* Optional: copy a w x h rectangle of colour target `src` at (sx, sy) to
++     * (dx, dy) of colour target `dst`, on the GPU and ordered with the draws
++     * and clears around it. Both are R,G,B,A targets. Returns 0 on success.
++     * The engine keeps a resolve (a scaled 2D transfer out of a supersampled
++     * surface) on the GPU with it rather than reading the picture back. */
++    int  (*color_target_copy)(void* user, u32 dst, u32 dx, u32 dy, u32 src,
++                              u32 sx, u32 sy, u32 w, u32 h);
+ } rsx_draw_backend;
+ 
+ /* ---- the engine --------------------------------------------------------- */
+@@ -284,6 +292,10 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
+ int rsx_draw_engine_resolve_read(u32 src_loc, u32 src_offset, u32 src_pitch, u32 ds, u32 dt,
+                                  u32 dst_loc, u32 dst_offset, u32 dst_pitch, u32 out_w, u32 out_h);
+ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32 h);
++/* A 2D transfer is about to read or write guest bytes [offset, offset + bytes)
++ * on the CPU: any resolve the engine kept on the GPU there is stored into guest
++ * memory first, so the transfer sees (or overwrites) the resolved pixels. */
++void rsx_draw_engine_guest_access(u32 location, u32 offset, u32 bytes);
+ 
+ /* --- test hooks ---------------------------------------------------------- */
+ 
+diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
+index 17f0187..c4ab7cf 100644
+--- a/libs/video/rsx_vulkan_backend.c
++++ b/libs/video/rsx_vulkan_backend.c
+@@ -109,7 +109,7 @@
+     X(vkCreateGraphicsPipelines) X(vkDestroyPipeline) \
+     X(vkCreateSampler) X(vkDestroySampler) \
+     X(vkCmdPipelineBarrier) X(vkCmdClearColorImage) X(vkCmdClearDepthStencilImage) \
+-    X(vkCmdCopyImageToBuffer) X(vkCmdCopyBufferToImage) \
++    X(vkCmdCopyImageToBuffer) X(vkCmdCopyBufferToImage) X(vkCmdCopyImage) \
+     X(vkCmdBeginRenderPass) X(vkCmdEndRenderPass) X(vkCmdBindPipeline) \
+     X(vkCmdBindVertexBuffers) X(vkCmdBindDescriptorSets) X(vkCmdPushConstants) \
+     X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdDraw) \
+@@ -2436,6 +2436,29 @@ static void vk_eng_readback(void* user, u32 surface, u32 x, u32 y, u32 w, u32 h,
+     vk_destroy_buffer(&st);
+ }
+ 
++/* A rectangle of one colour target copied into another of the same format, recorded into the batch like the
++ * draws around it: a resolve the engine keeps on the GPU. */
++static int vk_eng_color_target_copy(void* user, u32 dst, u32 dx, u32 dy, u32 src, u32 sx, u32 sy, u32 w, u32 h)
++{
++    (void)user;
++    vk_eng_obj* d = vk_eng_get(dst, VK_ENG_COLOR);
++    vk_eng_obj* o = vk_eng_get(src, VK_ENG_COLOR);
++    if (!d || !o || d->fmt != o->fmt || !w || !h || sx + w > o->w || sy + h > o->h ||
++        dx + w > d->w || dy + h > d->h || vk_rec_begin())
++        return -1;
++    vk_barrier_image(o->im.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
++    vk_barrier_image(d->im.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
++    VkImageCopy region = {
++        .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
++        .srcOffset = { (int32_t)sx, (int32_t)sy, 0 },
++        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
++        .dstOffset = { (int32_t)dx, (int32_t)dy, 0 },
++        .extent = { w, h, 1 },
++    };
++    pvkCmdCopyImage(s_vk.cmd, o->im.img, VK_IMAGE_LAYOUT_GENERAL, d->im.img, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
++    return 0;
++}
++
+ /* ---- E3: textures ---------------------------------------------------------
+  * The engine decodes every level to host rows (rsx_texture_decode) and hands
+  * them over one upload each; the crossbar is a property of the view, so it
+@@ -3382,6 +3405,7 @@ static const rsx_draw_backend s_vk_engine_backend = {
+     .readback             = vk_eng_readback,
+     .depth_readback       = vk_eng_depth_readback,
+     .color_target_write   = vk_eng_color_target_write,
++    .color_target_copy    = vk_eng_color_target_copy,
+ };
+ 
+ static rsx_backend s_vulkan_backend = {

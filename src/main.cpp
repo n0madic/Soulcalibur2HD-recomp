@@ -373,7 +373,10 @@ static DWORD WINAPI frame_clock(LPVOID)
 #define FLIP_ALLOWED() (!flip_per_vblank || presented_vblank != vblanks)
 
     for (;;) {
-        Sleep(4);
+        /* 1 ms, not 4: this thread also drains the FIFO, and a frame the guest finished while it slept waited out the
+         * rest of the sleep before being drained and flipped (about 5 ms a frame of a 60 fps fight). The ticks below
+         * keep their own 16 ms clock. */
+        Sleep(1);
         ULONGLONG now = GetTickCount64();
 
         int fired = 0;

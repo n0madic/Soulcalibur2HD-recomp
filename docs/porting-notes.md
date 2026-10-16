@@ -112,6 +112,21 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
     4 ms minimum gap between two mixed blocks, measured from a `Sleep(1)` that wakes late, often left the game's audio
     thread less time than that. The mix is now paced on the 5.33 ms block clock with a high-resolution timer: 0% silent
     blocks and exactly 187.5 blocks a second (`AUDIO_RATE=1`, `AUDIO_WAV=`).
+  - What still held a fight at 20-35 frames a second was the frame thread (the one that drains the FIFO and presents):
+    - `patches/0036`: the game resolves its 2x supersampled scene with six NV3089 tiles into VRAM and draws that to the
+      screen with one full-screen pass; the engine read the scene back mid-frame, stored it into guest memory and then
+      decoded and uploaded the same 3.6 MB as a texture. The resolve is now a GPU copy into a target the engine keeps
+      for that guest image, and the full-screen pass samples it; guest memory gets the pixels only when a texture of
+      another shape, a 2D transfer or a surface store touches those bytes (`RSX_ENGINE_GPU_RESOLVE=0` stores every
+      resolve as before). Compared on the same frames with the old path: identical. About 38 frames a second.
+    - `patches/0037`: a present was three submissions and three waits, one of them a full-frame readback for a debug
+      hook; now one of each. The front-buffer copy's readback reuses its staging buffer. About 49.
+    - `patches/0038`: every draw re-walked, byte-hashed and re-analysed the vertex program (hundreds a frame); that is
+      now kept until the program changes. With `main.cpp`'s frame loop sleeping 1 ms instead of 4 (a finished frame
+      waited out the sleep before it was drained and flipped), a fight runs at the 60 Hz cap.
+    - Still left on the frame thread: the per-draw vertex fetch and command recording (about 9 ms of a frame in a
+      fight) and the front-buffer copy to main memory (the game copies its picture out every frame; no draw reads it,
+      so it is presumably for the CPU and stays a readback).
   - Tried and dropped: a fast path in the guest memory accessors that skipped their idle diagnostic hooks (well over half of
     the game thread in a fight). The frame thread limits the frame rate, so it gained nothing there, and with the old 4 ms
     audio gap it made the late audio blocks worse (17-20%).
@@ -138,5 +153,5 @@ Open:
 - Input was only driven through `PAD_SCRIPT`/`PAD_FILE`; the keyboard fallbacks (macOS, Linux; Linux only with synthetic key events) and real controllers are untested.
 - Rare FIFO decode failures (`FIFO JUMP to unmapped IO ... drain stops`, 0-3 per minute, most often while a battle loads) lose that frame's commands.
 - `[mfc] REJECTED malformed transfer` from SPU image 2 appears now and then.
-- Windows draws through the Vulkan backend (fights at 20-35 frames a second on an Arc 140V: two full GPU readbacks a frame), Linux draws through the toolkit's Vulkan backend in an SDL2 window (null backend without a display; only seen on llvmpipe); `rsx_live_draw.c` (D3D12) lacks the supersample resolve of `patches/0006`.
+- Windows draws through the Vulkan backend (fights at the 60 Hz cap on an Arc 140V once the stage's shaders are built), Linux draws through the toolkit's Vulkan backend in an SDL2 window (null backend without a display; only seen on llvmpipe); `rsx_live_draw.c` (D3D12) lacks the supersample resolve of `patches/0006`.
 - "chain gives up" after 20 s is harmless (job chains starting with a GUARD the game has not notified yet).

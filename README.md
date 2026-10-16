@@ -109,9 +109,9 @@ derived from the game.
   window is a fixed 1280x720. With no `DISPLAY` or `WAYLAND_DISPLAY` (or with
   `SC2HD_HEADLESS=1`), and when there is no Vulkan device, the host runs on the toolkit's null backend instead, with no window.
 - Windows: the game is drawn through the Vulkan backend in an SDL window (D3D12 is only the fallback for a machine with no
-  Vulkan driver, `SC2HD_D3D12=1`; it draws nothing after the intro). Menus and movies run at 60 frames a second; a fight on an
-  integrated GPU (Intel Arc 140V) runs at about 20-35, because the scene is read back from the GPU twice a frame (the game's
-  supersampled resolve and its front-buffer copy); `SC2HD_FPS=1` prints the rate. `Esc` closes the window, as on Linux. The intro movie now plays in full
+  Vulkan driver, `SC2HD_D3D12=1`; it draws nothing after the intro). Menus and movies run at 60 frames a second, and so does a
+  fight on an integrated GPU (Intel Arc 140V) once its stage has loaded (the first seconds, while its shaders are built, are
+  slower); `SC2HD_FPS=1` prints the rate. `Esc` closes the window, as on Linux. The intro movie now plays in full
   (about two and a half minutes); Start skips it.
 
 ## How it works, building from source
