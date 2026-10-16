@@ -29,6 +29,8 @@ in order to a fresh clone by `scripts/build_host.sh` (one patch per area, each w
 | `0008-d3d12-backend` | vertex program cache keyed by program |
 | `0009-window-icon` | window icon hook |
 | `0010-portability` | module accessors, optional LGPL ATRAC, MinGW GCC (loader, `__thread`) |
+| `0011-loading-overlay` | "Loading..." over the black window while the game boots |
+| `0012-thread-priority-start` | a new thread of higher priority than its creator runs until it blocks (SurMixer start-up race: the opening movie sometimes had no sound) |
 
 ## SPURS queues
 The port has no Sony firmware code. cellSpurs is the toolkit's HLE; the one part it cannot do, the lock-free work queues the game
