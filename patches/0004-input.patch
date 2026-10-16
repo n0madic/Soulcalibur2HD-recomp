@@ -1,0 +1,444 @@
+cellPad: keyboard fallbacks and the SDL gamepad thread.
+
+- macOS keyboard fallback (arrows, Z=CROSS, X=CIRCLE, A, S, Q, W, 1, 2, Return=START, Tab=SELECT), and the same
+  mapping with SDL (SDL_GetKeyboardState, while the window has the focus) on Linux and Windows.
+- The SDL gamepad layer runs on one dedicated thread, so a controller plugged in after the start is seen.
+- Saturating log counters in cellPad.
+
+---
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 94de794..85feb90 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -169,6 +169,7 @@ if(APPLE)
+         "-framework QuartzCore"
+         "-framework Foundation"
+         "-framework AppKit"
++        "-framework ApplicationServices"
+     )
+     set_source_files_properties(
+         "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_metal_backend.m"
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index f2b4c11..7e8510e 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -84,36 +84,16 @@ static int s_data_fresh[PAD_MAX_HOST_PORTS];
+ 
+ #if PAD_BACKEND_SDL2
+ static SDL_GameController* s_sdl_controllers[PAD_MAX_HOST_PORTS];
+-static int s_sdl_inited = 0;
++/* Latest SDL state per port. Written only by the SDL pad thread, copied into
++ * s_host_state by pad_poll_sdl2; s_sdl_lock guards it and s_sdl_controllers
++ * (a controller closed on unplug must not be rumbled). */
++static PadHostState s_sdl_state[PAD_MAX_HOST_PORTS];
++static SDL_mutex*   s_sdl_lock;
++static SDL_Thread*  s_sdl_thread;
++static SDL_sem*     s_sdl_ready;
++static volatile int s_sdl_stop;
+ #endif
+ 
+-/* ---------------------------------------------------------------------------
+- * XInput backend
+- * -----------------------------------------------------------------------*/
+-
+-#if PAD_BACKEND_XINPUT
+-
+-/* Deadzone for analog sticks (same as XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) */
+-#define PAD_STICK_DEADZONE  7849
+-#define PAD_TRIGGER_THRESHOLD 30
+-
+-static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
+-{
+-    float normalized;
+-    if (raw > deadzone)
+-        normalized = (float)(raw - deadzone) / (float)(32767 - deadzone);
+-    else if (raw < -deadzone)
+-        normalized = (float)(raw + deadzone) / (float)(32767 - deadzone);
+-    else
+-        normalized = 0.0f;
+-
+-    /* Map -1.0..1.0 to 0..255 with center at 128 */
+-    int val = (int)(normalized * 127.0f) + 128;
+-    if (val < 0) val = 0;
+-    if (val > 255) val = 255;
+-    return (u8)val;
+-}
+-
+ /* Keyboard fallback for port 0.
+  *
+  * The only backend here is XInput, so on a machine with no controller plugged
+@@ -139,7 +119,86 @@ static int pad_host_window_focused(void)
+     GetWindowThreadProcessId(fg, &pid);
+     return pid == GetCurrentProcessId();
+ }
++static int pad_key_down(int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; }
++#define PADKEY_UP VK_UP
++#define PADKEY_DOWN VK_DOWN
++#define PADKEY_LEFT VK_LEFT
++#define PADKEY_RIGHT VK_RIGHT
++#define PADKEY_Z 'Z'
++#define PADKEY_X 'X'
++#define PADKEY_A 'A'
++#define PADKEY_S 'S'
++#define PADKEY_Q 'Q'
++#define PADKEY_W 'W'
++#define PADKEY_1 '1'
++#define PADKEY_2 '2'
++#define PADKEY_RETURN VK_RETURN
++#define PADKEY_TAB VK_TAB
++#elif defined(__APPLE__)
++/* macOS: virtual key codes (Carbon HIToolbox/Events.h kVK_*), polled with CGEventSourceKeyState,
++ * which needs no event tap and no window. "Focused" is NSApplication.isActive of this process,
++ * queried through the Objective-C runtime so this file stays plain C. */
++/* The system headers are not included on purpose: ApplicationServices / objc.h clash with this
++ * project's own `bool` and GetCurrentThread/GetCurrentProcess names, so the three entry points
++ * are declared by hand (CGKeyCode is uint16_t, kCGEventSourceStateCombinedSessionState is 0). */
++extern unsigned char CGEventSourceKeyState(int stateID, unsigned short key);
++extern void* objc_getClass(const char* name);
++extern void* sel_registerName(const char* name);
++extern void objc_msgSend(void);
++static int pad_host_window_focused(void)
++{
++    void* cls = objc_getClass("NSApplication");
++    if (!cls) return 0;
++    void* app = ((void* (*)(void*, void*))objc_msgSend)(cls, sel_registerName("sharedApplication"));
++    return app && ((signed char (*)(void*, void*))objc_msgSend)(app, sel_registerName("isActive"));
++}
++static int pad_key_down(int key)
++{
++    return CGEventSourceKeyState(0, (unsigned short)key) != 0;
++}
++#define PADKEY_UP 126
++#define PADKEY_DOWN 125
++#define PADKEY_LEFT 123
++#define PADKEY_RIGHT 124
++#define PADKEY_Z 6
++#define PADKEY_X 7
++#define PADKEY_A 0
++#define PADKEY_S 1
++#define PADKEY_Q 12
++#define PADKEY_W 13
++#define PADKEY_1 18
++#define PADKEY_2 19
++#define PADKEY_RETURN 36
++#define PADKEY_TAB 48
++#elif PAD_BACKEND_SDL2
++/* Everywhere else the keyboard is SDL's: scancodes are physical keys, like the macOS codes above. The state is kept
++ * current by whoever pumps SDL's events (the window of the RSX backend); without a video subsystem nothing is ever
++ * pressed. "Focused" is that some window of this process has the keyboard focus. */
++static int pad_host_window_focused(void)
++{
++    return SDL_GetKeyboardFocus() != NULL;
++}
++static int pad_key_down(int key)
++{
++    return SDL_GetKeyboardState(NULL)[key] != 0;
++}
++#define PADKEY_UP SDL_SCANCODE_UP
++#define PADKEY_DOWN SDL_SCANCODE_DOWN
++#define PADKEY_LEFT SDL_SCANCODE_LEFT
++#define PADKEY_RIGHT SDL_SCANCODE_RIGHT
++#define PADKEY_Z SDL_SCANCODE_Z
++#define PADKEY_X SDL_SCANCODE_X
++#define PADKEY_A SDL_SCANCODE_A
++#define PADKEY_S SDL_SCANCODE_S
++#define PADKEY_Q SDL_SCANCODE_Q
++#define PADKEY_W SDL_SCANCODE_W
++#define PADKEY_1 SDL_SCANCODE_1
++#define PADKEY_2 SDL_SCANCODE_2
++#define PADKEY_RETURN SDL_SCANCODE_RETURN
++#define PADKEY_TAB SDL_SCANCODE_TAB
++#endif
+ 
++#if defined(_WIN32) || defined(__APPLE__) || PAD_BACKEND_SDL2
+ static void pad_poll_keyboard(void)
+ {
+     static int off = -1;
+@@ -147,6 +206,7 @@ static void pad_poll_keyboard(void)
+     if (off) return;
+ 
+     PadHostState* hs = &s_host_state[0];
++
+     if (!pad_host_window_focused()) {
+         /* Release everything on focus loss, or a key held while alt-tabbing
+          * would stay down forever. */
+@@ -158,18 +218,18 @@ static void pad_poll_keyboard(void)
+     }
+ 
+     static const struct { int vk; u16 btn; } map[] = {
+-        { VK_UP,     CELL_PAD_CTRL_UP },      { VK_DOWN,  CELL_PAD_CTRL_DOWN },
+-        { VK_LEFT,   CELL_PAD_CTRL_LEFT },    { VK_RIGHT, CELL_PAD_CTRL_RIGHT },
+-        { 'Z',       CELL_PAD_CTRL_CROSS },   { 'X',      CELL_PAD_CTRL_CIRCLE },
+-        { 'A',       CELL_PAD_CTRL_SQUARE },  { 'S',      CELL_PAD_CTRL_TRIANGLE },
+-        { 'Q',       CELL_PAD_CTRL_L1 },      { 'W',      CELL_PAD_CTRL_R1 },
+-        { '1',       CELL_PAD_CTRL_L2 },      { '2',      CELL_PAD_CTRL_R2 },
+-        { VK_RETURN, CELL_PAD_CTRL_START },   { VK_TAB,   CELL_PAD_CTRL_SELECT },
++        { PADKEY_UP,     CELL_PAD_CTRL_UP },      { PADKEY_DOWN,  CELL_PAD_CTRL_DOWN },
++        { PADKEY_LEFT,   CELL_PAD_CTRL_LEFT },    { PADKEY_RIGHT, CELL_PAD_CTRL_RIGHT },
++        { PADKEY_Z,      CELL_PAD_CTRL_CROSS },   { PADKEY_X,     CELL_PAD_CTRL_CIRCLE },
++        { PADKEY_A,      CELL_PAD_CTRL_SQUARE },  { PADKEY_S,     CELL_PAD_CTRL_TRIANGLE },
++        { PADKEY_Q,      CELL_PAD_CTRL_L1 },      { PADKEY_W,     CELL_PAD_CTRL_R1 },
++        { PADKEY_1,      CELL_PAD_CTRL_L2 },      { PADKEY_2,     CELL_PAD_CTRL_R2 },
++        { PADKEY_RETURN, CELL_PAD_CTRL_START },   { PADKEY_TAB,   CELL_PAD_CTRL_SELECT },
+     };
+ 
+     u16 btns = 0;
+     for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++)
+-        if (GetAsyncKeyState(map[i].vk) & 0x8000) btns |= map[i].btn;
++        if (pad_key_down(map[i].vk)) btns |= map[i].btn;
+ 
+     hs->buttons   = btns;
+     hs->connected = 1;
+@@ -188,6 +248,34 @@ static void pad_poll_keyboard(void)
+ }
+ #endif
+ 
++/* ---------------------------------------------------------------------------
++ * XInput backend
++ * -----------------------------------------------------------------------*/
++
++#if PAD_BACKEND_XINPUT
++
++/* Deadzone for analog sticks (same as XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) */
++#define PAD_STICK_DEADZONE  7849
++#define PAD_TRIGGER_THRESHOLD 30
++
++static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
++{
++    float normalized;
++    if (raw > deadzone)
++        normalized = (float)(raw - deadzone) / (float)(32767 - deadzone);
++    else if (raw < -deadzone)
++        normalized = (float)(raw + deadzone) / (float)(32767 - deadzone);
++    else
++        normalized = 0.0f;
++
++    /* Map -1.0..1.0 to 0..255 with center at 128 */
++    int val = (int)(normalized * 127.0f) + 128;
++    if (val < 0) val = 0;
++    if (val > 255) val = 255;
++    return (u8)val;
++}
++
++
+ static void pad_poll_xinput(void)
+ {
+     for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
+@@ -287,10 +375,12 @@ static u8 pad_sdl_trigger_to_u8(int raw)
+     return (u8)val;
+ }
+ 
+-static void pad_poll_sdl2(void)
++/* One sweep of the SDL pad thread: pump SDL, (re)open controllers, snapshot their state. */
++static void pad_sdl_sweep(void)
+ {
+     SDL_GameControllerUpdate();
+ 
++    SDL_LockMutex(s_sdl_lock);
+     for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
+         if (!s_sdl_controllers[i]) {
+             /* Try to open newly connected controllers */
+@@ -301,7 +391,7 @@ static void pad_poll_sdl2(void)
+ 
+         SDL_GameController* gc = s_sdl_controllers[i];
+         if (!gc || !SDL_GameControllerGetAttached(gc)) {
+-            s_host_state[i].connected = 0;
++            s_sdl_state[i].connected = 0;
+             if (gc) {
+                 SDL_GameControllerClose(gc);
+                 s_sdl_controllers[i] = NULL;
+@@ -309,7 +399,7 @@ static void pad_poll_sdl2(void)
+             continue;
+         }
+ 
+-        s_host_state[i].connected = 1;
++        s_sdl_state[i].connected = 1;
+ 
+         u16 btns = 0;
+         if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_BACK))          btns |= CELL_PAD_CTRL_SELECT;
+@@ -333,59 +423,108 @@ static void pad_poll_sdl2(void)
+         if (lt > 3000) btns |= CELL_PAD_CTRL_L2;
+         if (rt > 3000) btns |= CELL_PAD_CTRL_R2;
+ 
+-        s_host_state[i].buttons = btns;
++        s_sdl_state[i].buttons = btns;
+ 
+         /* Analog sticks */
+-        s_host_state[i].analog_lx = pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX));
+-        s_host_state[i].analog_ly = pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY));
+-        s_host_state[i].analog_rx = pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTX));
+-        s_host_state[i].analog_ry = pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTY));
++        s_sdl_state[i].analog_lx = pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX));
++        s_sdl_state[i].analog_ly = pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY));
++        s_sdl_state[i].analog_rx = pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTX));
++        s_sdl_state[i].analog_ry = pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTY));
+ 
+         /* Triggers */
+-        s_host_state[i].trigger_l2 = pad_sdl_trigger_to_u8(lt);
+-        s_host_state[i].trigger_r2 = pad_sdl_trigger_to_u8(rt);
++        s_sdl_state[i].trigger_l2 = pad_sdl_trigger_to_u8(lt);
++        s_sdl_state[i].trigger_r2 = pad_sdl_trigger_to_u8(rt);
+ 
+         /* Pressure: SDL has digital buttons, so 0 or 255 */
+-        s_host_state[i].press_up       = (btns & CELL_PAD_CTRL_UP)       ? 255 : 0;
+-        s_host_state[i].press_down     = (btns & CELL_PAD_CTRL_DOWN)     ? 255 : 0;
+-        s_host_state[i].press_left     = (btns & CELL_PAD_CTRL_LEFT)     ? 255 : 0;
+-        s_host_state[i].press_right    = (btns & CELL_PAD_CTRL_RIGHT)    ? 255 : 0;
+-        s_host_state[i].press_triangle = (btns & CELL_PAD_CTRL_TRIANGLE) ? 255 : 0;
+-        s_host_state[i].press_circle   = (btns & CELL_PAD_CTRL_CIRCLE)   ? 255 : 0;
+-        s_host_state[i].press_cross    = (btns & CELL_PAD_CTRL_CROSS)    ? 255 : 0;
+-        s_host_state[i].press_square   = (btns & CELL_PAD_CTRL_SQUARE)   ? 255 : 0;
+-        s_host_state[i].press_l1       = (btns & CELL_PAD_CTRL_L1)       ? 255 : 0;
+-        s_host_state[i].press_r1       = (btns & CELL_PAD_CTRL_R1)       ? 255 : 0;
++        s_sdl_state[i].press_up       = (btns & CELL_PAD_CTRL_UP)       ? 255 : 0;
++        s_sdl_state[i].press_down     = (btns & CELL_PAD_CTRL_DOWN)     ? 255 : 0;
++        s_sdl_state[i].press_left     = (btns & CELL_PAD_CTRL_LEFT)     ? 255 : 0;
++        s_sdl_state[i].press_right    = (btns & CELL_PAD_CTRL_RIGHT)    ? 255 : 0;
++        s_sdl_state[i].press_triangle = (btns & CELL_PAD_CTRL_TRIANGLE) ? 255 : 0;
++        s_sdl_state[i].press_circle   = (btns & CELL_PAD_CTRL_CIRCLE)   ? 255 : 0;
++        s_sdl_state[i].press_cross    = (btns & CELL_PAD_CTRL_CROSS)    ? 255 : 0;
++        s_sdl_state[i].press_square   = (btns & CELL_PAD_CTRL_SQUARE)   ? 255 : 0;
++        s_sdl_state[i].press_l1       = (btns & CELL_PAD_CTRL_L1)       ? 255 : 0;
++        s_sdl_state[i].press_r1       = (btns & CELL_PAD_CTRL_R1)       ? 255 : 0;
+     }
++    SDL_UnlockMutex(s_sdl_lock);
+ }
+ 
+-static void pad_init_backend(void)
+-{
+-    if (!s_sdl_inited) {
+-        if (SDL_WasInit(SDL_INIT_GAMECONTROLLER) == 0) {
+-            SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
+-        }
+-        s_sdl_inited = 1;
+-    }
+-    memset(s_sdl_controllers, 0, sizeof(s_sdl_controllers));
++/* SDL's joystick layer is thread-affine on macOS: the IOKit/HIDAPI hotplug
++ * callbacks are scheduled on the run loop of the thread that initialised the
++ * subsystem, and only that thread's SDL_GameControllerUpdate delivers them.
++ * Initialising on whichever guest thread called cellPadInit and sweeping from
++ * whichever called cellPadGetData means a controller plugged in after start is
++ * never seen. So the subsystem lives on one dedicated thread, which does all
++ * the SDL work; guest threads only copy its latest snapshot. */
++#define PAD_SDL_SWEEP_MS 2
+ 
+-    /* Open any controllers already connected */
+-    int num = SDL_NumJoysticks();
+-    for (int i = 0; i < num && i < PAD_MAX_HOST_PORTS; i++) {
+-        if (SDL_IsGameController(i)) {
+-            s_sdl_controllers[i] = SDL_GameControllerOpen(i);
++static int SDLCALL pad_sdl_thread(void* unused)
++{
++    (void)unused;
++    int ok = SDL_WasInit(SDL_INIT_GAMECONTROLLER) != 0 ||
++             SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0;
++    if (!ok)
++        fprintf(stderr, "[cellPad] SDL gamecontroller init failed: %s\n", SDL_GetError());
++
++    while (!s_sdl_stop) {
++        if (ok) pad_sdl_sweep();
++        if (s_sdl_ready) {   /* the first sweep has opened the controllers present at start */
++            SDL_SemPost(s_sdl_ready);
++            s_sdl_ready = NULL;
+         }
++        SDL_Delay(PAD_SDL_SWEEP_MS);
+     }
+-}
+ 
+-static void pad_shutdown_backend(void)
+-{
++    SDL_LockMutex(s_sdl_lock);
+     for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
+         if (s_sdl_controllers[i]) {
+             SDL_GameControllerClose(s_sdl_controllers[i]);
+             s_sdl_controllers[i] = NULL;
+         }
+     }
++    SDL_UnlockMutex(s_sdl_lock);
++    if (ok) SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
++    return 0;
++}
++
++/* Called from pad_poll_backend: hand the SDL thread's latest snapshot to the guest-facing state. */
++static void pad_poll_sdl2(void)
++{
++    SDL_LockMutex(s_sdl_lock);
++    for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) s_host_state[i] = s_sdl_state[i];
++    SDL_UnlockMutex(s_sdl_lock);
++}
++
++static void pad_init_backend(void)
++{
++    if (s_sdl_thread) return;
++    memset(s_sdl_controllers, 0, sizeof(s_sdl_controllers));
++    memset(s_sdl_state, 0, sizeof(s_sdl_state));
++    s_sdl_stop = 0;
++    s_sdl_lock = SDL_CreateMutex();
++    s_sdl_ready = SDL_CreateSemaphore(0);
++    SDL_sem* ready = s_sdl_ready;
++    s_sdl_thread = SDL_CreateThread(pad_sdl_thread, "ps3recomp-pad", NULL);
++    if (!s_sdl_thread) {
++        fprintf(stderr, "[cellPad] cannot start the SDL pad thread: %s\n", SDL_GetError());
++        s_sdl_ready = NULL;
++        SDL_DestroySemaphore(ready);
++        return;
++    }
++    SDL_SemWait(ready);   /* posted by the thread's first sweep even if SDL init failed */
++    SDL_DestroySemaphore(ready);
++}
++
++static void pad_shutdown_backend(void)
++{
++    if (!s_sdl_thread) return;
++    s_sdl_stop = 1;
++    SDL_WaitThread(s_sdl_thread, NULL);
++    s_sdl_thread = NULL;
++    SDL_DestroyMutex(s_sdl_lock);
++    s_sdl_lock = NULL;
++    memset(s_sdl_state, 0, sizeof(s_sdl_state));
+ }
+ 
+ #endif /* PAD_BACKEND_SDL2 */
+@@ -439,7 +578,7 @@ static void pad_poll_backend(void)
+ #elif PAD_BACKEND_SDL2
+     pad_poll_sdl2();
+ #endif
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(__APPLE__) || PAD_BACKEND_SDL2
+     if (!s_host_state[0].connected) pad_poll_keyboard();
+ #endif
+ }
+@@ -985,7 +1124,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
+           vm_write32((unsigned long long)ea + _o, *(u32*)((char*)info + _o)); }
+ 
+     { static int _n = 0;
+-      if (_n++ < 2)
++      if ((_n < 2 && ++_n))
+           printf("[cellPad] PeriphGetInfo(max=%u now=%u) -> STANDARD class\n",
+                  info->max_connect, connected); }
+     return CELL_OK;
+@@ -1082,13 +1221,17 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
+ #endif
+ 
+ #if PAD_BACKEND_SDL2
+-    if (port_no < PAD_MAX_HOST_PORTS && s_sdl_controllers[port_no]) {
+-        SDL_GameControllerRumble(
+-            s_sdl_controllers[port_no],
+-            (Uint16)(param->motor[CELL_PAD_ACTUATOR_PARAM_LARGE] * 257),
+-            (Uint16)(param->motor[CELL_PAD_ACTUATOR_PARAM_SMALL] * 257),
+-            100 /* duration ms */
+-        );
++    if (port_no < PAD_MAX_HOST_PORTS && s_sdl_lock) {
++        SDL_LockMutex(s_sdl_lock);
++        if (s_sdl_controllers[port_no]) {
++            SDL_GameControllerRumble(
++                s_sdl_controllers[port_no],
++                (Uint16)(param->motor[CELL_PAD_ACTUATOR_PARAM_LARGE] * 257),
++                (Uint16)(param->motor[CELL_PAD_ACTUATOR_PARAM_SMALL] * 257),
++                100 /* duration ms */
++            );
++        }
++        SDL_UnlockMutex(s_sdl_lock);
+     }
+ #endif
+ 

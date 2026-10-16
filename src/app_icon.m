@@ -7,7 +7,7 @@
 
 #include "sc2hd_icon.h"
 
-/* Called by the toolkit's Metal backend (patches/0028). */
+/* Called by the toolkit's Metal backend (patches/0009). */
 void sc2hd_set_app_icon(void)
 {
     @autoreleasepool {

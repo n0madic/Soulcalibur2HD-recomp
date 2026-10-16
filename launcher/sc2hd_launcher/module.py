@@ -18,7 +18,7 @@ from .toolchain import Compiler
 LOG = logging.getLogger("sc2hd.module")
 
 # Thread-local variables cannot be imported from another image (Mach-O, PE), so the lift reaches the host's
-# trampoline state through exported accessors (toolkit patch 0022).
+# trampoline state through exported accessors (toolkit patch 0010).
 MODULE_DEFS = ("-DPPU_MODULE_ACCESSORS", "-DSPU_MODULE_ACCESSORS")
 # The symbols the host looks up in the module (main.cpp, load_game_module).
 MODULE_EXPORTS = ("sc2hd_module_abi", "function_table", "function_table_count")

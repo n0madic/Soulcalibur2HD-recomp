@@ -7,10 +7,10 @@ Dock icon of a bare executable. Without the resource or the hook nothing changes
 
 ---
 diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
-index 28daf9a..b7d2ae1 100644
+index f60b24a..a690611 100644
 --- a/libs/video/rsx_d3d12_backend.c
 +++ b/libs/video/rsx_d3d12_backend.c
-@@ -518,6 +518,8 @@ static HWND create_window(u32 width, u32 height, const char* title)
+@@ -519,6 +519,8 @@ static HWND create_window(u32 width, u32 height, const char* title)
      wc.lpfnWndProc = d3d12_wndproc;
      wc.hInstance = GetModuleHandle(NULL);
      wc.hCursor = LoadCursor(NULL, IDC_ARROW);

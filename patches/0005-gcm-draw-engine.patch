@@ -1,0 +1,902 @@
+RSX draw engine, cellGcm and NV3089: what Soulcalibur II HD's frame needs, and the speed to run it at 60 fps.
+
+- Display lists are copied when the guest stores `put` (a hook in vm_write32), up to their RET: the game
+  double-buffers them assuming the RSX is at most a frame behind and queues a dozen frames while the walker starts
+  or is stuck in present().
+- The supersampled scene is resolved by the NV3089 2:1 tile blits into the texture the final pass reads. The
+  resolve is a GPU copy (optional backend call color_target_copy) into a colour target the engine keeps for that
+  guest image; guest memory gets the pixels only when anything else touches those bytes (a texture of another
+  shape, a 2D transfer, a surface seed or a depth store). RSX_ENGINE_GPU_RESOLVE=0 stores every resolve as before.
+- RSX_ENGINE_SNAP_DIR=<dir> (+ RSX_ENGINE_SNAP_EVERY_S) writes the presented frame to PPM.
+- Depth snapshots are released when a new one is taken, unless the backend keeps and refills one per depth target
+  (the Vulkan backend hands back the same handle). The whole surface is read back once per picture and the resolve
+  tiles and front-buffer bands are served from that copy until anything is drawn, cleared or written.
+- NV3089: an unscaled 32-bit blit is copied row by row (vm_memcpy_to) instead of two accessor calls per pixel.
+- The vertex program's length, hash and input mask are kept until its start changes or a SET_TRANSFORM_PROGRAM word
+  arrives; surface pixels are stored into guest memory a 32-bit word at a time.
+- Saturating log counters in cellGcmSys and rsx_commands.
+
+---
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index ac0a7a8..e3032b5 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -764,6 +764,106 @@ static u32 gcm_io2ea(u32 io)
+     return ((u32)ea_page << 20) | (io & 0xFFFFFu);
+ }
+ 
++/* Private copy of a called display list (see GCM_SNAPSHOT_CALLS): one IO page that maps a scratch
++ * range of guest memory nothing else uses. */
++#define GCM_SHADOW_IO   0xFFD00000u   /* three 1 MB IO pages: 0xFFD, 0xFFE, 0xFFF */
++#define GCM_SHADOW_EA   0xA0000000u   /* inside the 0xE0000000 arena the ports allocate on POSIX */
++#define GCM_SHADOW_SIZE 0x300000u
++
++/* Display lists copied at the moment the guest publishes them.
++ *
++ * The walker reads a called list when it reaches the CALL, which can be several frames after the
++ * game wrote it: the game double-buffers its lists on the strength of a real RSX that never falls
++ * more than a frame behind, and a walker stalled in present() (or not yet started) lets it overwrite
++ * a list it has queued but not yet had executed. Whatever that frame sent once -- the 2D vertex
++ * program matrix, here -- is then lost for good. So every store to the control register's `put`
++ * walks the new ring words and copies each list they CALL, while the list is still what the game
++ * wrote; the walker takes the copy for the CALL at the same ring position. A list is copied up to
++ * its RET; one that does not end in a RET within GCM_PRE_MAX bytes, or branches, is left to the
++ * walker's own snapshot of the live memory. */
++#define GCM_PRE_SNAPS   32u
++#define GCM_PRE_MAX     GCM_SHADOW_SIZE
++typedef struct { u32 ring_off, tgt, valid, seq, len; u8* data; } gcm_pre_snap;
++static gcm_pre_snap s_pre[GCM_PRE_SNAPS];
++static u32          s_pre_scan = 0xFFFFFFFFu; /* ring offset the next scan starts at */
++static u32          s_pre_seq;
++static SRWLOCK      s_pre_lock = SRWLOCK_INIT;
++
++/* Bytes of the list at IO offset `tgt` up to and including its RET, or 0. */
++static u32 gcm_list_length(u32 tgt)
++{
++    for (u32 off = 0; off < GCM_PRE_MAX; ) {
++        const u32 ea = gcm_io2ea(tgt + off);
++        if (!ea) return 0;
++        const u32 w = vm_read32(ea);
++        if (w == 0x00020000u) return off + 4;                                           /* RET */
++        if ((w & 0xE0000003u) == 0x20000000u) return 0;                                 /* JUMP: not a plain list */
++        if ((w & 3u) == 2u) { off += 4; continue; }                                     /* nested CALL */
++        const u32 type = w >> 29;
++        if (type == 0 || type == 2) off += 4 + ((w >> 18) & 0x7FFu) * 4u;
++        else                        off += 4;
++    }
++    return 0;
++}
++
++static void gcm_pre_scan(u32 put)
++{
++    static int on = -1;
++    if (on < 0) on = getenv("GCM_SNAPSHOT_CALLS") ? 1 : 0;
++    if (!on || !vm_base) return;
++    AcquireSRWLockExclusive(&s_pre_lock);
++    if (s_pre_scan == 0xFFFFFFFFu) s_pre_scan = s_fifo_getoff;
++    u32 off = s_pre_scan;
++    for (u32 steps = 0; off != put && steps < 8192; steps++) {
++        const u32 ea = gcm_io2ea(off);
++        if (!ea) break;
++        const u32 w = vm_read32(ea);
++        if ((w & 0xE0000003u) == 0x20000000u) { off = w & 0x1FFFFFFCu; continue; }      /* JUMP */
++        if ((w & 3u) == 2u) {                                                           /* CALL */
++            const u32 tgt = w & 0x1FFFFFFCu, tea = gcm_io2ea(tgt), len = tea ? gcm_list_length(tgt) : 0;
++            if (len) {
++                u32 slot = GCM_PRE_SNAPS;
++                for (u32 k = 0; k < GCM_PRE_SNAPS; k++) if (!s_pre[k].valid) { slot = k; break; }
++                if (slot == GCM_PRE_SNAPS) break;               /* walker is far behind: it falls back to the live list */
++                u8* copy = (u8*)realloc(s_pre[slot].data, len);
++                if (!copy) break;
++                memcpy(copy, vm_base + tea, len);
++                s_pre[slot].data = copy; s_pre[slot].len = len;
++                s_pre[slot].ring_off = off; s_pre[slot].tgt = tgt; s_pre[slot].valid = 1; s_pre[slot].seq = ++s_pre_seq;
++            }
++            off += 4; continue;
++        }
++        if (w == 0x00020000u) { off += 4; continue; }                                   /* RET */
++        const u32 type = w >> 29;
++        if (type == 0 || type == 2) off += 4 + ((w >> 18) & 0x7FFu) * 4u;               /* method header + data */
++        else                        off += 4;
++    }
++    s_pre_scan = off;
++    ReleaseSRWLockExclusive(&s_pre_lock);
++}
++
++/* Called by the guest's store to the control register's put word. */
++void cellGcm_on_put_store(u32 put) { gcm_pre_scan(put & 0x1FFFFFFCu); }
++
++/* Copy the list taken for the CALL at ring offset `ring_off` into the shadow range; 0 if there is none.
++ * Consumed once. */
++static int gcm_pre_take(u32 ring_off, u32 tgt, u8* dst)
++{
++    int ok = 0;
++    AcquireSRWLockExclusive(&s_pre_lock);
++    for (u32 k = 0; k < GCM_PRE_SNAPS; k++)
++        if (s_pre[k].valid && s_pre[k].ring_off == ring_off && s_pre[k].tgt == tgt) {
++            memcpy(dst, s_pre[k].data, s_pre[k].len);
++            s_pre[k].valid = 0; ok = 1;
++            /* The walker takes CALLs in order, so anything copied before this one it never reached is stale. */
++            for (u32 j = 0; j < GCM_PRE_SNAPS; j++)
++                if (s_pre[j].valid && (s32)(s_pre[j].seq - s_pre[k].seq) < 0) s_pre[j].valid = 0;
++            break;
++        }
++    ReleaseSRWLockExclusive(&s_pre_lock);
++    return ok;
++}
++
+ /* RSX get pointer (IO offset) + one-deep CALL return slot. The FIFO-wrap
+  * recycle path teleports these when it resets a ring without a JUMP command. */
+ /* Milliseconds on a monotonic clock, for the runtime's own timeouts and rate
+@@ -886,6 +986,20 @@ static void nv3089_engine_wrote(u32 dst_pitch, u32 x0, u32 y0, u32 x1, u32 y1)
+                                 x1 - x0, y1 - y0);
+ }
+ 
++/* Guest bytes the copy below reads (the source rows) and writes (the clipped destination rows): the engine stores a
++ * resolve it kept on the GPU there first. */
++static void nv3089_engine_access(u32 in_pitch, u32 out_h, u32 dst_pitch, u32 y0, u32 y1)
++{
++    if (!rsx_draw_engine_enabled() || !out_h) return;
++    const u32 v0 = s_nv3089.in_uv >> 16;   /* 12.4 */
++    const u32 sy1 = (u32)((((u64)v0 << 8) + (u64)(out_h - 1) * s_nv3089.dt_dy) >> 20);
++    rsx_draw_engine_guest_access((s_nv3089.src_dma != 0xFEED0001u) ? RSX_LOCATION_LOCAL : RSX_LOCATION_MAIN,
++                                 s_nv3089.in_off, (sy1 + 1u) * in_pitch);
++    if (y1 > y0)
++        rsx_draw_engine_guest_access((s_gcm2d.dst_dma != 0xFEED0001u) ? RSX_LOCATION_LOCAL : RSX_LOCATION_MAIN,
++                                     s_gcm2d.dst_offset + y0 * dst_pitch, (y1 - y0) * dst_pitch);
++}
++
+ static void nv3089_blit(void)
+ {
+     u32 out_w = s_nv3089.out_sz & 0xFFFF, out_h = s_nv3089.out_sz >> 16;
+@@ -901,8 +1015,8 @@ static void nv3089_blit(void)
+           if ((poll++ & 63u) == 0) { FILE* g = fopen(gate, "rb"); open_gate = g != NULL; if (g) fclose(g); }
+           if (open_gate) {
+               int _sl = (s_nv3089.src_dma != 0xFEED0001u), _dl = (s_gcm2d.dst_dma != 0xFEED0001u);
+-              printf("[NV3089G] fmt=0x%X out=%ux%u at %u,%u in=%ux%u uv=0x%08X ds=0x%X dt=0x%X src=0x%08X/%u dst=0x%08X/%u swz=%d%c",
+-                     s_nv3089.fmt & 0xFF, out_w, out_h, out_x, out_y,
++              printf("[NV3089G] op=%u fmt=0x%X out=%ux%u at %u,%u in=%ux%u uv=0x%08X ds=0x%X dt=0x%X src=0x%08X/%u dst=0x%08X/%u swz=%d%c",
++                     s_nv3089.op, s_nv3089.fmt & 0xFF, out_w, out_h, out_x, out_y,
+                      s_nv3089.in_sz & 0xFFFF, s_nv3089.in_sz >> 16, s_nv3089.in_uv,
+                      s_nv3089.ds_dx, s_nv3089.dt_dy,
+                      cellGcmResolveLocated(_sl, s_nv3089.in_off), in_pitch,
+@@ -961,6 +1075,9 @@ static void nv3089_blit(void)
+         u32 dst2 = cellGcmResolveLocated(1, s_nv309e.offset);
+         u32 u0b = s_nv3089.in_uv & 0xFFFF, v0b = s_nv3089.in_uv >> 16;
+         nv3089_engine_read(in_pitch, out_w, out_h);
++        nv3089_engine_access(in_pitch, out_h, dst_pitch, 0, 0);
++        if (rsx_draw_engine_enabled())
++            rsx_draw_engine_guest_access(RSX_LOCATION_LOCAL, s_nv309e.offset, out_w * out_h * 4u);
+         /* Copy words verbatim through raw pointers rather than vm_read32/
+          * vm_write32: this moves ~500k pixels per blit and several blits run per
+          * frame, and the two byte swaps would cancel anyway. */
+@@ -1030,8 +1147,49 @@ static void nv3089_blit(void)
+     u32 dbpp = (s_gcm2d.color_fmt == 4u /* R5G6B5 */) ? 2u
+              : (s_gcm2d.color_fmt == 1u /* Y8 */)     ? 1u : 4u;
+     u32 bpp = (sbpp == dbpp) ? sbpp : 4u;
++    /* A resolve out of a supersampled surface the host draws at display size (see
++     * rsx_draw_engine_resolve_read): the guest-memory copy below would sample the host picture
++     * placed into the larger guest layout and keep only its top left corner. */
++    if (bpp == 4 && s_nv3089.ds_dx == s_nv3089.dt_dy && s_nv3089.ds_dx >= 0x200000u &&
++        rsx_draw_engine_enabled() && (!s_nv3089.clip_sz || (cx0 == 0 && cy0 == 0 && out_x == 0 && out_y == 0))) {
++        const u32 sloc = (s_nv3089.src_dma != 0xFEED0001u) ? RSX_LOCATION_LOCAL : RSX_LOCATION_MAIN;
++        const u32 dloc = (s_gcm2d.dst_dma  != 0xFEED0001u) ? RSX_LOCATION_LOCAL : RSX_LOCATION_MAIN;
++        const u32 rw = (cx1 != 0xFFFFFFFFu && cx1 < out_w) ? cx1 : out_w;      /* the clip bounds the tile */
++        const u32 rh = (cy1 != 0xFFFFFFFFu && cy1 < out_h) ? cy1 : out_h;
++        if (rsx_draw_engine_resolve_read(sloc, s_nv3089.in_off + (v0 >> 4) * in_pitch + (u0 >> 4) * 4u, in_pitch,
++                                         s_nv3089.ds_dx, s_nv3089.dt_dy, dloc,
++                                         s_gcm2d.dst_offset + out_y * dst_pitch + out_x * 4u, dst_pitch,
++                                         rw, rh))
++            return;
++    }
+     if (bpp == 4) nv3089_engine_read(in_pitch, out_w, out_h);
+-    for (u32 y = 0; y < out_h; y++) {
++    { const u32 y0 = out_y > cy0 ? out_y : cy0;
++      const u32 y1 = (out_y + out_h < cy1) ? out_y + out_h : cy1;
++      nv3089_engine_access(in_pitch, out_h, dst_pitch, y0, y1); }
++    /* An unscaled copy is a row copy: a 1280x720 one per frame (this title copies its front buffer out each frame)
++     * cost a read and a write accessor call per pixel. The two byte swaps of the per-pixel path cancel, so a row is
++     * a block store of the source bytes; vm_memcpy_to breaks SPU reservations per line as vm_write32 would. Overlap,
++     * a PPU reservation or a write watch keep the per-pixel path. */
++    int rows_done = 0;
++    if (s_nv3089.ds_dx == 0x100000u && s_nv3089.dt_dy == 0x100000u && g_resv_store_active <= 0 && !g_ww_hi) {
++        const u32 x0 = out_x > cx0 ? out_x : cx0, y0 = out_y > cy0 ? out_y : cy0;
++        const u32 x1 = (out_x + out_w < cx1) ? out_x + out_w : cx1;
++        const u32 y1 = (out_y + out_h < cy1) ? out_y + out_h : cy1;
++        /* The per-pixel loop's source position at 1:1: ((u0 << 8) + x * 1.0) >> 20. */
++        const u32 sx = (u0 >> 12) + (x0 - out_x), sy0 = (v0 >> 12) + (y0 - out_y);
++        const u64 s_lo = (u64)src + (u64)sy0 * in_pitch + (u64)sx * bpp;
++        const u64 s_hi = s_lo + (u64)(y1 > y0 ? y1 - y0 : 0) * in_pitch;
++        const u64 d_lo = (u64)dst + (u64)y0 * dst_pitch + (u64)x0 * bpp;
++        const u64 d_hi = d_lo + (u64)(y1 > y0 ? y1 - y0 : 0) * dst_pitch;
++        if (x1 > x0 && y1 > y0 && (s_hi <= d_lo || d_hi <= s_lo) && s_hi < 0x100000000ull && d_hi < 0x100000000ull) {
++            const u32 len = (x1 - x0) * bpp;
++            for (u32 y = y0; y < y1; y++)
++                vm_memcpy_to((u32)(d_lo + (u64)(y - y0) * dst_pitch),
++                             vm_ptr8((u32)(s_lo + (u64)(y - y0) * in_pitch)), len);
++            rows_done = 1;
++        }
++    }
++    for (u32 y = 0; !rows_done && y < out_h; y++) {
+         u32 dy = out_y + y;
+         if (dy < cy0 || dy >= cy1) continue;
+         u64 sv = ((u64)v0 << 8) + (u64)y * s_nv3089.dt_dy;         /* 20.12 */
+@@ -1105,7 +1263,7 @@ static void gcm_2d_method(u32 subch, u32 method, u32 data)
+          * NV308A, so seeing it identifies the object bound here. */
+         if (method == 0x0300) { s_nv309e.fmt = data; s_nv309e.active = 1;
+                                 s_nv309e.subch = (int)subch;
+-            { static int _n = 0; if (_n++ < 4)
++            { static int _n = 0; if ((_n < 4 && ++_n))
+                 printf("[NV309E] format=0x%08X (log2 %ux%u fmt=0x%X)%c", data,
+                        1u << ((data >> 16) & 0xFF), 1u << ((data >> 24) & 0xFF),
+                        data & 0xFFFF, 10); }
+@@ -1737,6 +1895,17 @@ static void gcm_rsx_process_fifo_unlocked(void)
+         if ((w & 3) == 2) {                    /* CALL: offset | 2 */
+             { u32 tgt = w & 0x1FFFFFFCu;
+               if (!gcm_io2ea(tgt)) { gcm_fifo_bad_branch("CALL", tgt, w); gcm_fifo_resync_why("unmapped-CALL", &s_fifo_getoff, put); break; }
++              /* GCM_SNAPSHOT_CALLS=1: walk a private copy of the called list. */
++              { static int snap = -1;
++                if (snap < 0) snap = getenv("GCM_SNAPSHOT_CALLS") ? 1 : 0;
++                u32 e = snap ? gcm_io2ea(tgt) : 0;
++                if (e) {
++                    for (u32 pg = 0; pg < GCM_SHADOW_SIZE >> 20; pg++)
++                        s_ea_address_table[(GCM_SHADOW_IO >> 20) + pg] = (u16)((GCM_SHADOW_EA >> 20) + pg);
++                    if (!gcm_pre_take(s_fifo_getoff, tgt, vm_base + GCM_SHADOW_EA))
++                        memcpy(vm_base + GCM_SHADOW_EA, vm_base + e, GCM_SHADOW_SIZE);
++                    tgt = GCM_SHADOW_IO;
++                } }
+               s_fifo_calloff = s_fifo_getoff + 4;
+               s_fifo_getoff  = tgt; }
+             continue;
+@@ -2295,7 +2464,7 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
+           }
+       } }
+ 
+-    { static int _n=0; if (getenv("FLIP_DBG") && _n++ < 20)
++    { static int _n=0; if (getenv("FLIP_DBG") && (_n < 20 && ++_n))
+         fprintf(stderr, "[FLIP] SetFlipCommand(buf=%u) set=%d\n",
+                 bufferId, bufferId < CELL_GCM_MAX_DISPLAY_BUFFER_NUM ? s_display_buffer_set[bufferId] : -1); }
+     if (bufferId >= CELL_GCM_MAX_DISPLAY_BUFFER_NUM)
+@@ -2619,7 +2788,7 @@ s32 cellGcmAddressToOffset(u32 address, u32* offset)
+     printf("[cellGcmSys] WARNING: AddressToOffset failed for 0x%08X\n", address);
+     vm_write32(off_ea, 0);
+     { static int _d = -1; if (_d < 0) _d = getenv("A2O_FAILDBG") ? 1 : 0;
+-      if (_d) { static int _n = 0; if (_n++ < 12)
++      if (_d) { static int _n = 0; if ((_n < 12 && ++_n))
+           fprintf(stderr, "[A2O] FAILED ea=0x%08X (not in local or IO space)%c",
+                   address, 10); } }
+     return CELL_GCM_ERROR_FAILURE;
+diff --git a/libs/video/rsx_commands.c b/libs/video/rsx_commands.c
+index d8506de..b3065d5 100644
+--- a/libs/video/rsx_commands.c
++++ b/libs/video/rsx_commands.c
+@@ -635,7 +635,7 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
+     }
+ 
+     if (method == NV4097_SET_TRANSFORM_CONSTANT_LOAD) {
+-        { static int _n=0, _e=-1; if (_e < 0) _e = getenv("LOAD_DBG") ? 1 : 0; if (_e && _n++ < 200)
++        { static int _n=0, _e=-1; if (_e < 0) _e = getenv("LOAD_DBG") ? 1 : 0; if (_e && (_n < 200 && ++_n))
+             fprintf(stderr, "[LOAD] transform_constant_load = %u\n", data); }
+         state->transform_constant_load = data;
+         return 0;
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+index b438d87..bb4d569 100644
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -133,6 +133,21 @@ typedef struct {
+     int valid;
+ } eng_display_buffer;
+ 
++/* A resolve kept on the GPU (rsx_draw_engine_resolve_read): guest bytes at
++ * `offset` laid out as a w x h image of 32-bit pixels `pitch` apart, whose
++ * resolved pixels live in the colour target `handle` instead of guest memory.
++ * `rects` are the rectangles resolved since guest memory last got a copy,
++ * disjoint; none means guest memory is current. */
++#define ENG_MAX_RESOLVES      4
++#define ENG_MAX_RESOLVE_RECTS 16
++typedef struct { u32 x, y, w, h; } eng_rect;
++typedef struct {
++    u32 location, offset, pitch, w, h;
++    u32 handle;
++    eng_rect rects[ENG_MAX_RESOLVE_RECTS];
++    u32 n_rects;
++} eng_resolve;
++
+ static struct {
+     const rsx_draw_backend* be;
+     int ready;
+@@ -150,6 +165,8 @@ static struct {
+     eng_pipeline pipelines[ENG_MAX_PIPELINES];
+     u32 n_pipelines;
+     eng_display_buffer display_buffers[8];
++    eng_resolve resolves[ENG_MAX_RESOLVES];
++    u32 n_resolves;
+ 
+     u32 frames;
+     u64 texture_use_serial;
+@@ -158,6 +175,16 @@ static struct {
+     u32 last_present_surface;
+     u32 last_flip_buffer;
+     u64 write_serial;       /* orders colour and depth writes to one address */
++    u32 vp_serial;          /* bumped by every transform program upload word */
++    /* What the draws work out from the resident vertex program -- its length, the hash its pipelines are keyed on,
++     * the inputs it reads -- kept while neither its start nor the program changes: hundreds of draws a frame used
++     * to walk and byte-hash up to 8 KB of ucode each. */
++    struct {
++        int valid, hashed, analysed;
++        u32 start, serial, instrs, input_mask;
++        u64 hash;
++    } vpm;
++    u64 readback_epoch;     /* bumped by every colour draw, clear or write: invalidates the readback copy */
+ 
+     /* staging: decoded texture levels, the constant blocks, the index list */
+     u8* tex_staging;
+@@ -171,6 +198,8 @@ static struct {
+     rsx_fp_constant_block fp_constants;
+ } g;
+ 
++static void eng_resolves_sync(u32 location, u32 offset, u32 bytes);
++
+ /* The decompilers' HLSL. The VP decompiler builds bodies up to 192 KB. */
+ static char s_vs_hlsl[256 * 1024];
+ static char s_ps_hlsl[256 * 1024];
+@@ -510,6 +539,7 @@ static const void* eng_surface_seed(u32 location, u32 offset, u32 w, u32 h,
+     /* A8R8G8B8 with the LN bit: a surface is linear, never swizzled. */
+     rsx_texture_layout(0x85u | 0x20u, w, h, &tl);
+     if (!tl.face_bytes || !tl.dst_row_bytes) return NULL;
++    eng_resolves_sync(location, offset, tl.face_bytes);
+     const u8* src = eng_guest_ptr(NULL, location, offset, tl.face_bytes);
+     if (!src) return NULL;
+     const u32 bytes = tl.dst_row_bytes * tl.rows;
+@@ -569,6 +599,7 @@ static u32 eng_surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+ 
+     eng_surface* s = &g.surfaces[slot];
+     if (s->handle) g.be->color_target_release(g.be->user, s->handle);
++    g.readback_epoch++;
+     s->location = location; s->offset = offset;
+     s->w = want_w; s->h = want_h; s->fmt = want_fmt;
+     s->handle = handle;
+@@ -654,6 +685,19 @@ static u32 eng_surface_at(u32 location, u32 offset, u32 pitch, u32* x, u32* y)
+ static u8* s_coherence_rows;
+ static u32 s_coherence_cap;
+ 
++/* One row of host R,G,B,A pixels stored as the guest's A,R,G,B words (R,G,B,A when the texture decoder reads them
++ * that way), a word at a time: a whole 1280x720 picture goes through here every frame. */
++static void eng_store_guest_row(u8* dst, const u8* src, u32 w, int rgba)
++{
++    if (rgba) { memcpy(dst, src, (size_t)w * 4u); return; }
++    for (u32 c = 0; c < w; c++) {
++        u32 px;
++        memcpy(&px, src + (size_t)c * 4u, 4);
++        px = (px << 8) | (px >> 24);              /* bytes R,G,B,A -> A,R,G,B (little-endian host) */
++        memcpy(dst + (size_t)c * 4u, &px, 4);
++    }
++}
++
+ /* RSX_ENGINE_COHERENCE_LOG=<n>: log the first n transfers the engine syncs,
+  * with how many non-zero pixels moved -- the question when a composite comes
+  * out black is whether the GPU surface had anything in it. */
+@@ -682,9 +726,35 @@ static u8* eng_coherence_buffer(u32 bytes)
+     return s_coherence_rows;
+ }
+ 
++/* The last whole-surface readback. A title reads one picture back in pieces -- a resolve in 512x512 tiles, a
++ * display buffer in a 1024- and a 256-pixel-wide band -- and each piece used to be its own GPU flush and wait.
++ * The copy stays valid until anything is drawn, cleared or written into any surface (g.readback_epoch), or the
++ * surface is recreated (its handle changes). */
++static struct { u32 handle, w, h; u64 epoch; u8* px; size_t cap; } s_rbc;
++
++static int eng_readback_rows(const eng_surface* s, u32 x, u32 y, u32 w, u32 h, u8* rows)
++{
++    if (s_rbc.handle != s->handle || s_rbc.epoch != g.readback_epoch || s_rbc.w != s->w || s_rbc.h != s->h) {
++        const size_t need = (size_t)s->w * 4u * s->h;
++        if (need > s_rbc.cap) {
++            u8* n = (u8*)realloc(s_rbc.px, need);
++            if (!n) return 0;
++            s_rbc.px = n;
++            s_rbc.cap = need;
++        }
++        g.be->submit_and_wait(g.be->user, RSX_BE_FLUSH_GUEST_REFERENCE);
++        g.be->readback(g.be->user, s->handle, 0, 0, s->w, s->h, s_rbc.px, s->w * 4u);
++        s_rbc.handle = s->handle; s_rbc.w = s->w; s_rbc.h = s->h; s_rbc.epoch = g.readback_epoch;
++    }
++    for (u32 r = 0; r < h; r++)
++        memcpy(rows + (size_t)r * w * 4u, s_rbc.px + ((size_t)(y + r) * s->w + x) * 4u, (size_t)w * 4u);
++    return 1;
++}
++
+ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32 h)
+ {
+     if (!g.ready || !g.be->readback || !pitch || !w || !h) return;
++    eng_resolves_sync(location, offset, (h - 1u) * pitch + w * 4u);
+     u32 x = 0, y = 0;
+     const u32 slot = eng_surface_at(location, offset, pitch, &x, &y);
+     if (slot == ENG_INVALID) {
+@@ -697,9 +767,7 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
+     if (x + w > s->w) w = s->w - x;
+     if (y + h > s->h) h = s->h - y;
+     u8* rows = eng_coherence_buffer(w * 4u * h);
+-    if (!rows) return;
+-    g.be->submit_and_wait(g.be->user, RSX_BE_FLUSH_GUEST_REFERENCE);
+-    g.be->readback(g.be->user, s->handle, x, y, w, h, rows, w * 4u);
++    if (!rows || !eng_readback_rows(s, x, y, w, h, rows)) return;
+     if (eng_coherence_log())
+         fprintf(stderr, "[rsx engine] guest_read %u:0x%08X %ux%u <- surface 0x%08X at %u,%u:"
+                         " %u non-zero pixels\n", location, offset, w, h, s->offset, x, y,
+@@ -709,11 +777,256 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
+         u8* dst = (u8*)eng_guest_ptr(NULL, location, offset + r * pitch, w * 4u);
+         if (!dst) return;
+         const u8* src = rows + (size_t)r * w * 4u;
+-        for (u32 c = 0; c < w; c++, src += 4, dst += 4) {
+-            if (rgba) { dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3]; }
+-            else      { dst[0] = src[3]; dst[1] = src[0]; dst[2] = src[1]; dst[3] = src[2]; }
++        eng_store_guest_row(dst, src, w, rgba);
++    }
++}
++
++/* ---- resolves kept on the GPU ------------------------------------------- */
++/*
++ * A title resolving its supersampled scene into VRAM every frame and drawing
++ * the result to the screen with one full-screen pass used to cost a whole
++ * readback of the scene, its store into guest memory, and a re-hash, decode and
++ * upload of the same pixels as a texture -- with the GPU idle while the frame
++ * thread waited for it. Instead the resolved pixels are copied on the GPU into a
++ * colour target the engine keeps for that guest range (eng_resolve), and a
++ * texture unit naming exactly that image samples the target. Guest memory gets
++ * the pixels only when something else reads those bytes through the engine: a
++ * texture of another shape or format, a 2D transfer, a surface store. What it
++ * cannot see is the CPU reading them directly; RSX_ENGINE_GPU_RESOLVE=0 keeps
++ * the old store of every resolve for a title that does.
++ */
++
++static int eng_gpu_resolve_enabled(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("RSX_ENGINE_GPU_RESOLVE"); on = !(e && e[0] == '0'); }
++    return on && g.be->color_target_copy && g.be->readback;
++}
++
++static int eng_resolve_overlaps(const eng_resolve* r, u32 location, u32 offset, u32 bytes)
++{
++    if (!r->handle || r->location != location || !bytes) return 0;
++    const u64 lo = r->offset, hi = lo + (u64)r->pitch * r->h;
++    return (u64)offset < hi && (u64)offset + bytes > lo;
++}
++
++/* Cached textures that may cover [offset, offset + bytes) are re-hashed on their next use; a texture's span is not
++ * kept, so one starting up to 8 MB below counts. */
++static void eng_textures_rehash(u32 location, u32 offset, u32 bytes)
++{
++    for (u32 i = 0; i < g.n_textures; i++) {
++        eng_texture* e = &g.textures[i];
++        if (e->location != location) continue;
++        if (e->offset >= offset ? e->offset - offset < bytes : offset - e->offset < 0x800000u)
++            e->last_hash_frame = g.frames - 1u;
++    }
++}
++
++/* Store a resolve's pending rectangles into guest memory, laid out as the CPU copy of the resolve leaves them. */
++static void eng_resolve_to_guest(eng_resolve* r)
++{
++    if (!r->n_rects) return;
++    u32 x0 = r->w, y0 = r->h, x1 = 0, y1 = 0;
++    for (u32 i = 0; i < r->n_rects; i++) {
++        const eng_rect* q = &r->rects[i];
++        if (q->x < x0) x0 = q->x;
++        if (q->y < y0) y0 = q->y;
++        if (q->x + q->w > x1) x1 = q->x + q->w;
++        if (q->y + q->h > y1) y1 = q->y + q->h;
++    }
++    const u32 bw = x1 - x0, bh = y1 - y0;
++    u8* rows = eng_coherence_buffer(bw * 4u * bh);
++    if (rows) {
++        g.be->submit_and_wait(g.be->user, RSX_BE_FLUSH_GUEST_REFERENCE);
++        g.be->readback(g.be->user, r->handle, x0, y0, bw, bh, rows, bw * 4u);
++        const int rgba = rsx_texture_argb_is_rgba();
++        for (u32 i = 0; i < r->n_rects; i++) {
++            const eng_rect* q = &r->rects[i];
++            for (u32 y = 0; y < q->h; y++) {
++                u8* dst = (u8*)eng_guest_ptr(NULL, r->location,
++                                             r->offset + (q->y + y) * r->pitch + q->x * 4u, q->w * 4u);
++                if (!dst) break;
++                eng_store_guest_row(dst, rows + ((size_t)(q->y - y0 + y) * bw + (q->x - x0)) * 4u, q->w, rgba);
++            }
++        }
++        if (eng_coherence_log())
++            fprintf(stderr, "[rsx engine] resolve %u:0x%08X %ux%u stored to guest memory (%u rectangles)\n",
++                    r->location, r->offset, r->w, r->h, r->n_rects);
++    }
++    r->n_rects = 0;
++    eng_textures_rehash(r->location, r->offset, r->pitch * r->h);
++}
++
++/* Bring guest memory up to date with every resolve kept on the GPU that overlaps [offset, offset + bytes). */
++static void eng_resolves_sync(u32 location, u32 offset, u32 bytes)
++{
++    for (u32 i = 0; i < g.n_resolves; i++)
++        if (g.resolves[i].n_rects && eng_resolve_overlaps(&g.resolves[i], location, offset, bytes))
++            eng_resolve_to_guest(&g.resolves[i]);
++}
++
++void rsx_draw_engine_guest_access(u32 location, u32 offset, u32 bytes)
++{
++    if (g.ready) eng_resolves_sync(location, offset, bytes);
++}
++
++static void eng_resolve_drop(eng_resolve* r)
++{
++    eng_resolve_to_guest(r);
++    if (r->handle) g.be->color_target_release(g.be->user, r->handle);
++    memset(r, 0, sizeof *r);
++}
++
++/* The resolve for this guest image, created when new. Any other one overlapping its bytes is stored and dropped
++ * first: two GPU copies of one range could not both be current. NULL when no target could be made. */
++static eng_resolve* eng_resolve_get(u32 location, u32 offset, u32 pitch, u32 w, u32 h)
++{
++    for (u32 i = 0; i < g.n_resolves; i++) {
++        eng_resolve* r = &g.resolves[i];
++        if (r->handle && r->location == location && r->offset == offset && r->pitch == pitch &&
++            r->w == w && r->h == h)
++            return r;
++    }
++    eng_resolve* slot = NULL;
++    for (u32 i = 0; i < g.n_resolves; i++) {
++        eng_resolve* r = &g.resolves[i];
++        if (r->handle && !eng_resolve_overlaps(r, location, offset, pitch * h)) continue;
++        eng_resolve_drop(r);
++        if (!slot) slot = r;
++    }
++    if (!slot) {
++        slot = &g.resolves[g.n_resolves < ENG_MAX_RESOLVES ? g.n_resolves++ : 0];
++        eng_resolve_drop(slot);
++    }
++    const u32 handle = g.be->color_target_create(g.be->user, RSX_BE_FMT_R8G8B8A8, w, h, NULL, 0);
++    if (!handle) return NULL;
++    slot->location = location; slot->offset = offset; slot->pitch = pitch;
++    slot->w = w; slot->h = h;
++    slot->handle = handle;
++    slot->n_rects = 0;
++    { static u32 logs = 0; if (logs++ < 8)
++        fprintf(stderr, "[rsx engine] resolve %u:0x%08X %ux%u (pitch %u) kept on the GPU\n",
++                location, offset, w, h, pitch); }
++    return slot;
++}
++
++static u64 eng_resolve_area(const eng_resolve* r)
++{
++    u64 a = 0;
++    for (u32 i = 0; i < r->n_rects; i++) a += (u64)r->rects[i].w * r->rects[i].h;
++    return a;
++}
++
++/* Before rectangle q of a resolve is copied in: 1 when q must then be added to the pending ones, 0 when they
++ * already cover it. Pending rectangles q only partly overlaps are stored into guest memory first, so the set stays
++ * disjoint and exact (what is pending is always newer on the GPU than in guest memory). */
++static int eng_resolve_prepare(eng_resolve* r, const eng_rect* q)
++{
++    if (eng_resolve_area(r) == (u64)r->w * r->h) return 0;      /* all of it is pending */
++    for (u32 i = 0; i < r->n_rects; i++) {
++        const eng_rect* p = &r->rects[i];
++        if (q->x >= p->x && q->y >= p->y && q->x + q->w <= p->x + p->w && q->y + q->h <= p->y + p->h)
++            return 0;
++        if (q->x < p->x + p->w && p->x < q->x + q->w && q->y < p->y + p->h && p->y < q->y + q->h) {
++            eng_resolve_to_guest(r);
++            return 1;
+         }
+     }
++    if (r->n_rects >= ENG_MAX_RESOLVE_RECTS) eng_resolve_to_guest(r);
++    return 1;
++}
++
++/* A texture unit reading a resolve kept on the GPU exactly as it is laid out -- linear A8R8G8B8 at its address and
++ * pitch, its size, one level -- with all of it resolved: the picture itself, through the unit's crossbar. 0 for
++ * anything else, which eng_texture_slot then reads from guest memory, storing the resolve there first. */
++static u32 eng_resolve_texture(const rsx_dsp_texture* t)
++{
++    const u32 base_fmt = t->format & RSX_TEX_FMT_BASE_MASK & ~(u32)RSX_TEX_FMT_UNNORM;
++    if (base_fmt != RSX_TEX_FMT_A8R8G8B8 || !(t->format & RSX_TEX_FMT_LINEAR) || t->cubemap || t->mipmaps > 1)
++        return 0;
++    for (u32 i = 0; i < g.n_resolves; i++) {
++        const eng_resolve* r = &g.resolves[i];
++        if (!r->handle || !r->n_rects || r->location != t->location || r->offset != t->offset ||
++            r->pitch != t->pitch || r->w != t->width || r->h != t->height)
++            continue;
++        if (eng_resolve_area(r) != (u64)r->w * r->h) return 0;
++        const u32 view = g.be->surface_view
++            ? g.be->surface_view(g.be->user, r->handle, t->remap & 0xFFFFu, t->format) : 0;
++        return view ? view : r->handle;
++    }
++    return 0;
++}
++
++/* A scaled NV3089 blit out of a supersampled colour surface (a resolve). The host renders the
++ * surface at display size (w x h) while the guest laid it out k times wider and taller
++ * (pitch = 4 * k * w, k * h rows, often split over several address ranges), so the k:1 downsample
++ * the guest asks for is a 1:1 copy in host pixels: the output pixel at (x, y) is the host pixel at
++ * (guest position / k + x, ... + y). Copying the host pixels into the guest layout first, as
++ * rsx_draw_engine_guest_read does, would put a display-sized picture into the top left corner of
++ * the k-times-larger layout and the downsample would then keep only its top left quarter.
++ * Writes the resolved rectangle straight into the destination in guest memory (32-bit pixels).
++ * Returns 0 when the source is not such a surface (the caller falls back to the guest-memory
++ * copy). */
++int rsx_draw_engine_resolve_read(u32 src_loc, u32 src_offset, u32 src_pitch, u32 ds, u32 dt,
++                                 u32 dst_loc, u32 dst_offset, u32 dst_pitch, u32 out_w, u32 out_h)
++{
++    if (!g.ready || !g.be->readback || !src_pitch || !dst_pitch || !out_w || !out_h) return 0;
++    if (ds != dt || ds < 0x200000u || (ds & 0xFFFFFu)) return 0;     /* whole factor >= 2 */
++    const u32 k = ds >> 20;
++    u32 slot = ENG_INVALID, gx = 0, gy = 0;
++    for (u32 i = 0; i < g.n_surfaces; i++) {
++        const eng_surface* s = &g.surfaces[i];
++        if (!s->handle || s->location != src_loc || src_offset < s->offset) continue;
++        if (s->fmt != RSX_BE_FMT_R8G8B8A8 || s->pitch != src_pitch || src_pitch != 4u * k * s->w) continue;
++        const u32 d = src_offset - s->offset;
++        if (d / src_pitch >= k * s->h || (d % src_pitch) / 4u >= k * s->w) continue;
++        if (slot != ENG_INVALID && g.surfaces[slot].offset > s->offset) continue;
++        slot = i; gx = (d % src_pitch) / 4u; gy = d / src_pitch;
++    }
++    if (slot == ENG_INVALID) return 0;
++    const eng_surface* s = &g.surfaces[slot];
++    const u32 sx = gx / k, sy = gy / k;
++    if (sx >= s->w || sy >= s->h) return 1;                           /* beyond the picture: nothing to copy */
++    u32 w = out_w, h = out_h;
++    if (sx + w > s->w) w = s->w - sx;
++    if (sy + h > s->h) h = s->h - sy;
++    /* Kept on the GPU: the destination is the host picture's own layout when its host pixel (0, 0) is at
++     * dst_offset - (sy rows + sx pixels), which holds for every tile of one resolve. */
++    if (eng_gpu_resolve_enabled() && dst_pitch >= 4u * s->w && dst_offset >= sy * dst_pitch + sx * 4u) {
++        eng_resolve* r = eng_resolve_get(dst_loc, dst_offset - sy * dst_pitch - sx * 4u, dst_pitch, s->w, s->h);
++        const eng_rect q = { sx, sy, w, h };
++        if (r) {
++            const int add = eng_resolve_prepare(r, &q);
++            if (g.be->color_target_copy(g.be->user, r->handle, sx, sy, s->handle, sx, sy, w, h) == 0) {
++                if (add) r->rects[r->n_rects++] = q;
++                if (eng_coherence_log())
++                    fprintf(stderr, "[rsx engine] resolve_read %u:0x%08X k=%u %ux%u <- surface 0x%08X at %u,%u:"
++                                    " on the GPU\n", src_loc, src_offset, k, w, h, s->offset, sx, sy);
++                return 1;
++            }
++        }
++    }
++    eng_resolves_sync(dst_loc, dst_offset, (h - 1u) * dst_pitch + w * 4u);
++    u8* rows = eng_coherence_buffer(w * 4u * h);
++    if (!rows || !eng_readback_rows(s, sx, sy, w, h, rows)) return 0;
++    if (eng_coherence_log())
++        fprintf(stderr, "[rsx engine] resolve_read %u:0x%08X k=%u %ux%u <- surface 0x%08X at %u,%u: %u non-zero pixels\n",
++                src_loc, src_offset, k, w, h, s->offset, sx, sy, eng_nonzero_pixels(rows, w * h));
++    const int rgba = rsx_texture_argb_is_rgba();
++    for (u32 r = 0; r < h; r++) {
++        u8* dst = (u8*)eng_guest_ptr(NULL, dst_loc, dst_offset + r * dst_pitch, w * 4u);
++        if (!dst) return 1;
++        const u8* src = rows + (size_t)r * w * 4u;
++        eng_store_guest_row(dst, src, w, rgba);
++    }
++    /* Cached textures that contain the written rectangle are re-hashed on their next use. */
++    for (u32 i = 0; i < g.n_textures; i++) {
++        eng_texture* e = &g.textures[i];
++        if (e->location == dst_loc && e->offset <= dst_offset && dst_offset - e->offset < 0x800000u) {
++            e->last_hash_frame = g.frames - 1u;
++        }
++    }
++    return 1;
+ }
+ 
+ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32 h)
+@@ -747,6 +1060,7 @@ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32
+                         " %u non-zero pixels\n", location, offset, w, h, s->offset, x, y,
+                 eng_nonzero_pixels(rows, w * h));
+     g.be->color_target_write(g.be->user, s->handle, x, y, w, h, rows, w * 4u);
++    g.readback_epoch++;
+ }
+ 
+ static u32 eng_current_surface(void)
+@@ -792,6 +1106,7 @@ static u32 eng_zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
+ 
+     eng_zdepth* z = &g.zdepths[slot];
+     if (z->handle) g.be->depth_target_release(g.be->user, z->handle);
++    if (z->snapshot) g.be->texture_release(g.be->user, z->snapshot);
+     z->location = location; z->offset = offset;
+     z->w = want_w; z->h = want_h;
+     z->handle = handle;
+@@ -817,6 +1132,10 @@ static u32 eng_zdepth_snapshot(u32 slot)
+     if (!g.be->depth_snapshot) return 0;
+     const u32 tex = g.be->depth_snapshot(g.be->user, z->handle, z->w, z->h);
+     if (!tex) return 0;
++    /* The previous snapshot is stale once a clear invalidated it; without this every frame's depth
++     * map stayed allocated (3-4 MB a frame: 28 GB after two minutes of a fight). A backend that refills one
++     * snapshot per depth target (Vulkan) hands back the same handle, which must not be released. */
++    if (z->snapshot && z->snapshot != tex) g.be->texture_release(g.be->user, z->snapshot);
+     z->snapshot = tex;
+     z->snapshot_valid = 1;
+     return tex;
+@@ -936,6 +1255,7 @@ static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
+     if (!w || !h || w > ENG_MAX_TEX_DIM || h > ENG_MAX_TEX_DIM) return 0;
+     const u32 span = eng_texture_span(fmt, w, h, levels, pitch, cube);
+     if (!span) return 0;
++    eng_resolves_sync(location, offset, span);
+ 
+     for (u32 i = 0; i < g.n_textures; i++) {
+         eng_texture* e = &g.textures[i];
+@@ -1067,6 +1387,7 @@ static int eng_zdepth_to_guest(u32 slot)
+         s_depth_rows = n;
+         s_depth_cap = w * h;
+     }
++    eng_resolves_sync(z->location, z->offset, (h - 1u) * z->pitch + w * bpp);
+     g.be->submit_and_wait(g.be->user, RSX_BE_FLUSH_GUEST_REFERENCE);
+     if (g.be->depth_readback(g.be->user, z->handle, 0, 0, w, h, s_depth_rows,
+                              w * (u32)sizeof(float)) != 0)
+@@ -1112,6 +1433,7 @@ static void eng_zdepth_wrote(u32 slot, const rsx_dsp_surface* sf)
+ 
+ static void eng_surfaces_wrote(const u32* targets, u32 n_targets)
+ {
++    g.readback_epoch++;
+     const u64 serial = ++g.write_serial;
+     for (u32 i = 0; i < n_targets; i++) {
+         g.surfaces[targets[i]].color_serial = serial;
+@@ -1204,8 +1526,14 @@ static int eng_guest_programs(const u8** out_vp, u32* out_vp_instrs,
+     const u32 start = rsx_dsp_vp_start(&g.rsx);
+     if (start < RSX_DSP_VP_INSTR) {
+         vp_uc = (const u8*)(g.rsx.vp + start * 4);
+-        vp_instrs = rsx_vp_program_size_instrs(
+-            vp_uc, (RSX_DSP_VP_INSTR - start) * 16u);
++        if (!g.vpm.valid || g.vpm.start != start || g.vpm.serial != g.vp_serial) {
++            g.vpm.valid = 1;
++            g.vpm.hashed = g.vpm.analysed = 0;
++            g.vpm.start = start;
++            g.vpm.serial = g.vp_serial;
++            g.vpm.instrs = rsx_vp_program_size_instrs(vp_uc, (RSX_DSP_VP_INSTR - start) * 16u);
++        }
++        vp_instrs = g.vpm.instrs;
+     }
+ 
+     /* A zero SET_SHADER_PROGRAM is "none", not "the program at offset 0": the
+@@ -1237,10 +1565,15 @@ static void eng_vertex_layout(rsx_vertex_layout_plan* layout)
+     const u8* uc = NULL;
+     u32 instrs = 0;
+     if (eng_guest_programs(&uc, &instrs, NULL, NULL)) {
+-        rsx_vp_input_analysis analysis = { 0xFFFFu, 0 };
+-        if (rsx_vp_analyze_inputs(uc, instrs * 16u, &analysis) == (int)instrs &&
+-            analysis.exact && analysis.input_mask)
+-            mask = analysis.input_mask;
++        if (!g.vpm.analysed) {
++            rsx_vp_input_analysis analysis = { 0xFFFFu, 0 };
++            g.vpm.input_mask = 0xFFFFu;
++            if (rsx_vp_analyze_inputs(uc, instrs * 16u, &analysis) == (int)instrs &&
++                analysis.exact && analysis.input_mask)
++                g.vpm.input_mask = analysis.input_mask;
++            g.vpm.analysed = 1;
++        }
++        mask = g.vpm.input_mask;
+     }
+     rsx_vertex_layout_plan_init(layout, mask);
+ }
+@@ -1353,7 +1686,11 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+         static const u32 fixed_tag = 0x4E464958u;   /* "XIFN" */
+         key = eng_fnv1a(&fixed_tag, sizeof fixed_tag, key);
+     } else {
+-        key = eng_fnv1a(vp_uc, vp_instrs * 16u, key);
++        if (!g.vpm.hashed) {
++            g.vpm.hash = eng_fnv1a(vp_uc, vp_instrs * 16u, 1469598103934665603ull);
++            g.vpm.hashed = 1;
++        }
++        key = eng_fnv1a(&g.vpm.hash, sizeof g.vpm.hash, key);
+         key = rsx_fp_structural_hash(fp_uc, fp_size, key);
+         if (!key) return 0;
+         const u32 fp_ctrl_key = fp_ctrl & 0x40u;
+@@ -1713,6 +2050,7 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
+                 }
+             if (textures[u]) continue;
+         }
++        if ((textures[u] = eng_resolve_texture(&t)) != 0) continue;
+         textures[u] = eng_texture_slot(t.location, t.offset, t.format,
+                                        t.width, t.height, t.mipmaps, t.pitch,
+                                        (int)t.cubemap, t.remap & 0xFFFFu);
+@@ -2036,8 +2374,32 @@ static void pd_note(const u32* targets, u32 n_targets, u32 zslot,
+ /* Called on every present: arm on the first frame heavy enough when no delay
+  * was asked for, and while capturing, close the pass in progress and write
+  * the presented surface. */
++/* RSX_ENGINE_SNAP_DIR=<dir>, RSX_ENGINE_SNAP_EVERY_S=<n>: write the presented surface to
++ * <dir>/snap_<seconds since the first present>.ppm every n seconds (default 5), for following a
++ * run that cannot be watched. */
++static void pd_snapshot(u32 presented)
++{
++    static const char* dir = (const char*)-1;
++    static double every = 5.0;
++    static time_t t0, last;
++    if (dir == (const char*)-1) {
++        dir = getenv("RSX_ENGINE_SNAP_DIR");
++        const char* e = getenv("RSX_ENGINE_SNAP_EVERY_S");
++        if (e && atof(e) > 0.0) every = atof(e);
++    }
++    if (!dir || !*dir || presented == ENG_INVALID) return;
++    const time_t now = time(NULL);
++    if (!t0) { t0 = now; last = now - (time_t)every; }
++    if (difftime(now, last) < every) return;
++    last = now;
++    char path[1024];
++    snprintf(path, sizeof path, "%s/snap_%04ld.ppm", dir, (long)(now - t0));
++    pd_write_surface(presented, path);
++}
++
+ static void pd_present(u32 presented)
+ {
++    pd_snapshot(presented);
+     if (s_pd.state == 0) pd_capturing();
+     if (s_pd.state == 1 && !s_pd.after_s && g.guest_draws >= s_pd.min_draws) {
+         if (pd_open_index())
+@@ -2425,6 +2787,8 @@ void rsx_draw_engine_shutdown(void)
+         if (g.surfaces[i].handle) g.be->color_target_release(g.be->user, g.surfaces[i].handle);
+     for (u32 i = 0; i < g.n_zdepths; i++)
+         if (g.zdepths[i].handle) g.be->depth_target_release(g.be->user, g.zdepths[i].handle);
++    for (u32 i = 0; i < g.n_resolves; i++)
++        if (g.resolves[i].handle) g.be->color_target_release(g.be->user, g.resolves[i].handle);
+     if (g.ready && g.be->shutdown) g.be->shutdown(g.be->user);
+ 
+     rsx_draw_engine_set_guest_memory(NULL, NULL);
+@@ -2434,6 +2798,7 @@ void rsx_draw_engine_shutdown(void)
+     free(g.tex_staging); free(g.vp_cb); free(g.fp_cb); free(g.indices);
+     const rsx_draw_backend* be = g.be;
+     memset(&g, 0, sizeof g);
++    s_rbc.handle = 0;           /* the copy names a surface of the old backend state */
+     g.be = be;
+ }
+ 
+@@ -2447,6 +2812,7 @@ void rsx_draw_engine_method(u32 method, u32 arg)
+      * (0xE9xx, 0xEBxx) encode the subchannel bits as part of the address;
+      * preserve them with the wider mask. */
+     u32 m = (method >= 0xE000u) ? (method & 0xFFFCu) : (method & 0x1FFCu);
++    if (m >= 0x0B80u && m < 0x0C00u) g.vp_serial++;     /* SET_TRANSFORM_PROGRAM: the program is changing */
+     rsx_dispatch_method(&g.rsx, m, arg);
+ }
+ 
+diff --git a/libs/video/rsx_draw_engine.h b/libs/video/rsx_draw_engine.h
+index 1a3bc99..f858a8f 100644
+--- a/libs/video/rsx_draw_engine.h
++++ b/libs/video/rsx_draw_engine.h
+@@ -218,6 +218,14 @@ typedef struct rsx_draw_backend {
+      * DEPTH16); left NULL, such a texture reads guest memory as it is. */
+     int  (*depth_readback)(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
+                            float* out, u32 out_pitch);
++
++    /* Optional: copy a w x h rectangle of colour target `src` at (sx, sy) to
++     * (dx, dy) of colour target `dst`, on the GPU and ordered with the draws
++     * and clears around it. Both are R,G,B,A targets. Returns 0 on success.
++     * The engine keeps a resolve (a scaled 2D transfer out of a supersampled
++     * surface) on the GPU with it rather than reading the picture back. */
++    int  (*color_target_copy)(void* user, u32 dst, u32 dx, u32 dy, u32 src,
++                              u32 sx, u32 sy, u32 w, u32 h);
+ } rsx_draw_backend;
+ 
+ /* ---- the engine --------------------------------------------------------- */
+@@ -279,7 +287,15 @@ void rsx_draw_engine_note_flip(u32 buffer_id);
+  * pitch, `w` and `h` in 32-bit pixels. Only 8-bit-per-channel surfaces laid
+  * out with the same pitch take part; anything else is left alone. */
+ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32 h);
++/* Scaled blit out of a supersampled colour surface, straight into guest memory; see the definition.
++ * Returns 1 when handled. */
++int rsx_draw_engine_resolve_read(u32 src_loc, u32 src_offset, u32 src_pitch, u32 ds, u32 dt,
++                                 u32 dst_loc, u32 dst_offset, u32 dst_pitch, u32 out_w, u32 out_h);
+ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32 h);
++/* A 2D transfer is about to read or write guest bytes [offset, offset + bytes)
++ * on the CPU: any resolve the engine kept on the GPU there is stored into guest
++ * memory first, so the transfer sees (or overwrites) the resolved pixels. */
++void rsx_draw_engine_guest_access(u32 location, u32 offset, u32 bytes);
+ 
+ /* --- test hooks ---------------------------------------------------------- */
+ 
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index fb43e8e..6b2ec57 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -1892,7 +1892,9 @@ void vm_write32(uint64_t a, uint32_t v) { barrier_watch_hit((uint32_t)a, v, 4, _
+       /* Raw SPU problem state: run control, mailboxes and signal notification
+        * have side effects. The plain store above still happens -- the registers
+        * are guest memory and the PPU reads most of them straight back. */
+-      if (spu_raw_is_reg((uint32_t)a)) spu_raw_reg_store((uint32_t)a, _v, 4); } }
++      if (spu_raw_is_reg((uint32_t)a)) spu_raw_reg_store((uint32_t)a, _v, 4);
++      /* The RSX control register's put word: the guest just published new ring commands. */
++      if ((uint32_t)a == VM_HLE_INJECT_BASE + 0x2000u) { extern void cellGcm_on_put_store(uint32_t); cellGcm_on_put_store(_v); } } }
+ void vm_write64(uint64_t a, uint64_t v) {
+     /* PPU_WWATCH covers the 64-bit store too. It did not, which made the watch
+      * blind to exactly the code that matters most for it: every bignum and

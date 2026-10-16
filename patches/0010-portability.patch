@@ -1,0 +1,218 @@
+Module access and portability: separate game module, optional LGPL decoder, MinGW GCC.
+
+- Accessor functions for the thread-local state of the PPU trampoline and the SPU context
+  (SPU_MODULE_ACCESSORS in spu_context.h, ppu_lifter.py), so a separately built game module can reach it.
+- The LGPL-2.1 ATRAC3plus decoder is optional (PS3RECOMP_ATRAC_LGPL, default ON). With it OFF a stub answers
+  at3p_open with NULL, so the library has no LGPL code in it.
+- ppu_loader.cpp builds with MinGW GCC: the profiling sampler (PS3_SAMPLE_*) reads the sampled thread's stack through
+  ReadProcessMemory there (GCC has no structured exception handling), and ppu_resv_break is not declared extern "C"
+  and defined static afterwards.
+- Thread-local storage uses __thread unless the compiler is MSVC. GCC and MinGW ignore __declspec(thread) with only
+  a warning, so these variables were plain globals shared by every thread: the thread-exit jump buffer, the SPURS job
+  answer slots and the sysutil completion flag.
+
+---
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1b6518b..0d854fd 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -76,9 +76,16 @@ endif()
+ list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_shader_msl.cpp")
+ # cellAtrac decodes with FFmpeg's ATRAC3plus decoder as extracted by PPSSPP
+ # (LGPL-2.1, kept separate in third_party/at3_standalone -- see its README).
+-file(GLOB AT3_SOURCES "third_party/at3_standalone/*.cpp")
+-set_source_files_properties(${AT3_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")  # upstream code
+-list(APPEND HLE_SOURCES ${AT3_SOURCES})
++# PS3RECOMP_ATRAC_LGPL=OFF swaps the decoder for a stub that fails every open, which keeps the library and any
++# binary linked from it free of LGPL code (third_party/at3_stub).
++option(PS3RECOMP_ATRAC_LGPL "Link the LGPL-2.1 ATRAC3plus decoder (cellAtrac)" ON)
++if(PS3RECOMP_ATRAC_LGPL)
++    file(GLOB AT3_SOURCES "third_party/at3_standalone/*.cpp")
++    set_source_files_properties(${AT3_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")  # upstream code
++    list(APPEND HLE_SOURCES ${AT3_SOURCES})
++else()
++    list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/at3_stub/at3_stub.c")
++endif()
+ 
+ # Runtime core (syscalls, PPU, SPU, memory)
+ file(GLOB_RECURSE RUNTIME_SOURCES
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+index 65630cb..2c2a2e0 100644
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -2536,7 +2536,7 @@ static int jg_wait(u32 ea)
+  * this queue, and would only notify again after the event arrives -- so
+  * signalling at walker exit deadlocks both sides. Signal when the WORK
+  * completes: at END, and on reaching a guard with jobs run this lap. */
+-#ifdef _WIN32
++#ifdef _MSC_VER
+ #  define SPURS_JOB_TLS __declspec(thread)
+ #else
+ #  define SPURS_JOB_TLS __thread
+diff --git a/libs/system/cellSysutil.c b/libs/system/cellSysutil.c
+index 252c3e8..b212982 100644
+--- a/libs/system/cellSysutil.c
++++ b/libs/system/cellSysutil.c
+@@ -81,8 +81,12 @@ void cellSysutilQueueEvent(int slot, uint32_t status, uint32_t param)
+ static SRWLOCK s_completion_lock = SRWLOCK_INIT;
+ #define COMPLETION_LOCK() AcquireSRWLockExclusive(&s_completion_lock)
+ #define COMPLETION_UNLOCK() ReleaseSRWLockExclusive(&s_completion_lock)
++#ifdef _MSC_VER
+ #define COMPLETION_TLS __declspec(thread)
+ #else
++#define COMPLETION_TLS __thread
++#endif
++#else
+ #include <pthread.h>
+ static pthread_mutex_t s_completion_lock = PTHREAD_MUTEX_INITIALIZER;
+ #define COMPLETION_LOCK() pthread_mutex_lock(&s_completion_lock)
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index 6b2ec57..d1bf962 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -623,7 +623,12 @@ static uint32_t samp_stack_guest(HANDLE h, const CONTEXT* c)
+     const uintptr_t* sp = (const uintptr_t*)c->Rsp;
+     for (int i = 0; i < 512; i++) {          /* 4 KB of stack */
+         uintptr_t v;
++#ifdef _MSC_VER
+         __try { v = sp[i]; } __except (1) { return 0; }
++#else
++        /* no SEH in GCC/MinGW: ReadProcessMemory fails on an unreadable address where a plain read would fault */
++        if (!ReadProcessMemory(GetCurrentProcess(), sp + i, &v, sizeof v, NULL)) return 0;
++#endif
+         uint32_t g = samp_lookup(v);
+         if (g) return g;
+     }
+@@ -697,7 +702,7 @@ static DWORD WINAPI samp_thread(LPVOID p)
+  * Writing the word leaves memory self-consistent: lwarx, the CAS and the
+  * polling reader all see the same thing, so the guest behaves as it would if
+  * whatever should have cleared the counter had done so. */
+-extern "C" void ppu_resv_break(uint64_t ea);
++static inline void ppu_resv_break(uint64_t ea);   /* defined below; GCC rejects extern followed by static */
+ static DWORD WINAPI poke_thread(LPVOID p)
+ {
+     const uint32_t ea  = (uint32_t)(uintptr_t)p;
+@@ -1937,6 +1942,9 @@ void flow_lookup_alloc(unsigned int p) {
+ 
+ /* Cross-fragment trampoline pointer (matches the lifted header's TLS decl). */
+ extern "C" PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*) = nullptr;
++/* The slot for a lift built as a separate module, which cannot import a TLS variable (see PPU_MODULE_ACCESSORS
++ * in the lifter's chunk prologue). */
++extern "C" void (**ppu_tramp_slot(void))(void*) { return &g_trampoline_fn; }
+ 
+ /* Per-thread active guest context, for the crash handler to report the guest PC
+  * (ctx->pc, updated by lifted code at block boundaries) of a host AV. */
+diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
+index ab270ce..54f4203 100644
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -768,6 +768,17 @@ static inline int spu_channel_has_data(const spu_channel* ch)
+  * function in the active image and runs it. Referenced by SPU_RET/SPU_DRAIN. */
+ void spu_indirect_branch(spu_context* ctx);
+ 
++#ifdef SPU_MODULE_ACCESSORS
++/* Lifted images built as a separate loadable module (dll/dylib/so) cannot import the thread-local
++ * variables below: the Mach-O and PE linkers reject a TLS reference to a symbol in another image.
++ * The host exports one accessor per variable (spu_drain.c) and the module reaches them through it. */
++void (**spu_tramp_slot(void))(spu_context*);
++uint32_t (*spu_pch_arr(void))[8];
++unsigned *spu_pch_n_slot(void);
++#  define g_spu_trampoline_fn (*spu_tramp_slot())
++#  define g_spu_pch           (*spu_pch_arr())
++#  define g_spu_pch_n         (*spu_pch_n_slot())
++#else
+ /* Pending cross-function transfer target; NULL when none. Thread-local: each
+  * spu_context is pinned to one host thread for its lifetime. */
+ extern SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*);
+@@ -777,6 +788,7 @@ extern SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*);
+  * trampoline hop, which is the one that actually precedes a bad branch. */
+ extern SPU_THREAD_LOCAL uint32_t g_spu_pch[8];
+ extern SPU_THREAD_LOCAL unsigned g_spu_pch_n;
++#endif
+ 
+ /* Central per-transfer hooks (stubbed in spu_drain.c until their milestones). */
+ void yz_lockstep_tick(spu_context* ctx);             /* round-robin token gate */
+diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
+index 1cd5cef..f178801 100644
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -21,6 +21,11 @@ SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*) = 0;
+ SPU_THREAD_LOCAL uint32_t g_spu_pch[8];
+ SPU_THREAD_LOCAL unsigned g_spu_pch_n;
+ 
++/* Accessors for lifted images built as a separate module (see SPU_MODULE_ACCESSORS in spu_context.h). */
++void (**spu_tramp_slot(void))(spu_context*) { return &g_spu_trampoline_fn; }
++uint32_t (*spu_pch_arr(void))[8] { return &g_spu_pch; }
++unsigned *spu_pch_n_slot(void) { return &g_spu_pch_n; }
++
+ /* yz_lockstep_tick now has its real body in spu_lockstep.c (milestone 2). */
+ 
+ /* SPURS task-launch interception at a trampoline hop (milestone: SPURS kernel).
+diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
+index 09a8d6b..f13d5a0 100644
+--- a/runtime/spu/spurs_job.c
++++ b/runtime/spu/spurs_job.c
+@@ -135,7 +135,7 @@ const uint8_t* spurs_job_ls_for_handle(uint32_t handle)
+  * flight. As plain globals these were clobbered between a job finishing and its
+  * own completion being pushed, so a query could be answered with an unrelated
+  * job's mailbox. Per-thread keeps each job paired with its own answer. */
+-#ifdef _WIN32
++#ifdef _MSC_VER
+ #  define SPURS_JOB_TLS __declspec(thread)
+ #else
+ #  define SPURS_JOB_TLS __thread
+diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
+index 042f131..fe7f60c 100644
+--- a/runtime/syscalls/sys_ppu_thread.c
++++ b/runtime/syscalls/sys_ppu_thread.c
+@@ -9,7 +9,7 @@
+  * from inside a loop and so called exit 1,435 times in one run, staying alive
+  * and holding whatever it held. Arm a jump in the thread proc and unwind to it
+  * instead. PS3_NO_THREAD_EXIT_UNWIND=1 restores the old behaviour. */
+-#if defined(_WIN32)
++#if defined(_MSC_VER)
+ #  define PPU_TLS __declspec(thread)
+ #else
+ #  define PPU_TLS __thread
+diff --git a/third_party/at3_stub/at3_stub.c b/third_party/at3_stub/at3_stub.c
+new file mode 100644
+index 0000000..9de4e96
+--- /dev/null
++++ b/third_party/at3_stub/at3_stub.c
+@@ -0,0 +1,14 @@
++/* Stand-in for the ATRAC3plus decoder (third_party/at3_standalone, LGPL-2.1) in builds that must stay free of
++ * LGPL code, e.g. a single statically linked binary under a permissive license (PS3RECOMP_ATRAC_LGPL=OFF).
++ * at3p_open reports failure, so cellAtrac refuses to set up a track and the title sees an ATRAC error. */
++#include "../at3_standalone/at3_bridge.h"
++#include <stddef.h>
++
++void* at3p_open(int channels, int* block_align) { (void)channels; (void)block_align; return NULL; }
++void  at3p_close(void* dec) { (void)dec; }
++void  at3p_flush(void* dec) { (void)dec; }
++int   at3p_decode(void* dec, float* left, float* right, int* samples, const uint8_t* frame, int frame_bytes)
++{
++    (void)dec; (void)left; (void)right; (void)samples; (void)frame; (void)frame_bytes;
++    return -1;
++}
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+index 66c65e5..34d38b7 100644
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -338,8 +338,16 @@ extern "C" void ps3_indirect_call(ppu_context* ctx);
+ extern "C" void ps3_hle_call(unsigned int nid, ppu_context* ctx);
+ 
+ /* Trampoline function pointer for cross-fragment branches (TLS).
+- * PPU_THREAD_LOCAL comes from ppu_recomp.h, included above. */
++ * PPU_THREAD_LOCAL comes from ppu_recomp.h, included above.
++ * A lift built as a separate loadable module (PPU_MODULE_ACCESSORS) cannot import a thread-local
++ * variable from the host (Mach-O and PE linkers reject it), so it reaches the host's slot through
++ * an exported accessor instead. */
++#ifdef PPU_MODULE_ACCESSORS
++extern "C" void (**ppu_tramp_slot(void))(void*);
++#  define g_trampoline_fn (*ppu_tramp_slot())
++#else
+ extern "C" PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*);
++#endif
+ 
+ /* Drain pending trampolines after any call that might set g_trampoline_fn.
+  * Converts cross-fragment fallthrough chains into iterative loops. */

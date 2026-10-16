@@ -37,7 +37,7 @@ The measured cost of the split is nil: CPU time of a run is the same within nois
   (`scripts/make_host_header.py`), so the two cannot drift apart.
 - A thread-local variable cannot be imported from another image (Mach-O and PE linkers refuse it). The lift reaches the
   trampoline state through accessor functions the host exports: `PPU_MODULE_ACCESSORS` (lifter prologue) and
-  `SPU_MODULE_ACCESSORS` (`spu_context.h`), both in `patches/0022`.
+  `SPU_MODULE_ACCESSORS` (`spu_context.h`), both in `patches/0010`.
 - The module carries `sc2hd_module_abi`, a hash over the headers and lifter it was built against (`sdk/ABI`). The host refuses a
   module with another value, so a module is never run against a host it was not built for.
 
@@ -76,7 +76,7 @@ derived from the game, so it must not be shared.
   DLL links against (the module exports only what the host looks up; the DLL names `sc2hd_host.exe`, so the host must keep that
   file name). `scripts/mingw-w64.cmake` prefers a MinGW clang (llvm-mingw, WinLibs' LLVM build): GCC's MinGW port has only
   emulated thread-local storage, a call per access, and the SPU threads live on their thread-locals. The game is drawn by the
-  Vulkan backend (`patches/0031`, SDL2 window, `vulkan-1.dll` loaded at run time, glslang for the guest programs; the
+  Vulkan backend (`patches/0006`, SDL2 window, `vulkan-1.dll` loaded at run time, glslang for the guest programs; the
   dependencies are built into `build/deps/prefix-windows`), with D3D12 as the fallback when there is no Vulkan driver
   (`SC2HD_D3D12=1` forces it). The D3D12 backend draws only the toolkit's old live-draw path, which never resolves this game's
   supersampled scene: a black picture after the intro. Run on a real Windows 11 machine (Intel Arc 140V): intro movie, menus,
@@ -89,11 +89,11 @@ derived from the game, so it must not be shared.
   correctly (`PAD_AUTOPRESS=1` gets past the intro), and `Esc` closes the window. Also run in WSL2 on Windows 11 (Ubuntu 24.04,
   WSLg's X11, sound through its PulseAudio): Ubuntu's Mesa has no Vulkan driver for the GPU there, so it is llvmpipe again;
   the intro movie runs at 60 frames a second and the attract-mode fights draw correctly at about 10. The Vulkan backend and
-  draw engine fixes made for Windows (`patches/0032`-`0038`) are shared code and apply here too. The toolkit's keyboard fallback was Windows and
-  macOS only; `patches/0029` adds an SDL one (`SDL_GetKeyboardState`, the same keys, while the window has the focus), checked with
+  draw engine fixes made for Windows (`patches/0005`, `patches/0006`) are shared code and apply here too. The toolkit's keyboard fallback was Windows and
+  macOS only; `patches/0004` adds an SDL one (`SDL_GetKeyboardState`, the same keys, while the window has the focus), checked with
   `xdotool` under Xvfb: Return leaves the intro, arrows and Z work in the menus.
 - Icon: the host carries the neutral `assets/icon/sc2hd.png` (`scripts/make_icon.py` turns it into the Windows icon resource
-  and a bitmap for the macOS Dock icon, set through a hook the Metal backend calls, `patches/0028`).
+  and a bitmap for the macOS Dock icon, set through a hook the Metal backend calls, `patches/0009`).
 
 ## Movies
 

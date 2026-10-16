@@ -581,7 +581,7 @@ int main(int argc, char** argv)
 #endif
 
     /* The game double-buffers its display lists and keeps writing the next frame's list while the
-     * walker may still be reading the previous one (patches/0006): walk a private copy of each
+     * walker may still be reading the previous one (patches/0005): walk a private copy of each
      * called list. */
     set_default_env("GCM_SNAPSHOT_CALLS", "1");
 
