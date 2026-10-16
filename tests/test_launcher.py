@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "launcher"))
 
-from sc2hd_launcher import devhost, module  # noqa: E402
+from sc2hd_launcher import devhost, game, module  # noqa: E402
 from sc2hd_launcher.toolchain import Compiler  # noqa: E402
 
 
@@ -145,6 +145,33 @@ class DevHostTest(unittest.TestCase):
         with mock.patch.object(devhost.subprocess, "run") as run, mock.patch.object(devhost, "find_bash", return_value="bash"):
             devhost.ensure_host(self.root)
         self.assertEqual(run.call_args.args[0], ["bash", str(self.root / "scripts" / "build_host.sh")])
+
+
+class ExpandInputsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_directory_stands_for_the_packages_inside_it(self):
+        (self.root / "b.PKG").write_text("")
+        (self.root / "a.pkg").write_text("")
+        (self.root / "EBOOT.elf").write_text("")
+        self.assertEqual(game._expand_inputs([self.root]), [self.root / "a.pkg", self.root / "b.PKG"])
+
+    def test_directory_without_packages_is_an_error(self):
+        with self.assertRaisesRegex(game.GameError, "no .pkg"):
+            game._expand_inputs([self.root])
+
+    def test_missing_input_is_an_error(self):
+        with self.assertRaisesRegex(game.GameError, "does not exist"):
+            game._expand_inputs([self.root / "nope.pkg"])
+
+    def test_files_pass_through_in_order(self):
+        (self.root / "g.zip").write_text("")
+        (self.root / "u.pkg").write_text("")
+        inputs = [self.root / "g.zip", self.root / "u.pkg"]
+        self.assertEqual(game._expand_inputs(inputs), inputs)
 
 
 if __name__ == "__main__":

@@ -79,6 +79,22 @@ def _extract_zip(archive: Path, dest: Path) -> list[Path]:
     return out
 
 
+def _expand_inputs(inputs: list[Path]) -> list[Path]:
+    """Checks the inputs exist; a directory (an unpacked update, say) stands for the .pkg files directly inside it."""
+    out: list[Path] = []
+    for item in inputs:
+        if item.is_dir():
+            found = sorted(p for p in item.iterdir() if p.is_file() and p.suffix.lower() == ".pkg")
+            if not found:
+                raise GameError(f"no .pkg in the directory {item}")
+            out += found
+        elif item.is_file():
+            out.append(item)
+        else:
+            raise GameError(f"{item} does not exist")
+    return out
+
+
 def _fingerprint(p: Path) -> list:
     st = p.stat()
     return [p.name, st.st_size, int(st.st_mtime)]
@@ -90,6 +106,7 @@ def install(host: Path, inputs: list[Path], rap: Path | None, dest: Path, scratc
     `inputs` are given base game first, then its update (optional); the members of a zip go largest first. The license is `rap`,
     or the only .rap found next to the inputs or inside a zip. Nothing is done when the same inputs were installed.
     """
+    inputs = _expand_inputs(inputs)
     key = json.dumps({"inputs": [_fingerprint(p) for p in inputs],
                       "rap": _fingerprint(rap) if rap else None}, sort_keys=True)
     stamp = dest / "install.stamp"
