@@ -1,6 +1,7 @@
 """Unit tests for the launcher's module build helpers: python3 tests/test_launcher.py"""
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
@@ -9,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "launcher"))
 
-from sc2hd_launcher import module  # noqa: E402
+from sc2hd_launcher import devhost, module  # noqa: E402
 from sc2hd_launcher.toolchain import Compiler  # noqa: E402
 
 
@@ -82,6 +83,61 @@ class WindowsLinkTest(unittest.TestCase):
         self.assertIn("-shared", link)
         self.assertIn(str(self.inp.out / "module.def"), link)
         self.assertIn(str(implib), link)
+
+
+class DevHostTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / "src").mkdir()
+        (self.root / "src" / "main.cpp").write_text("")
+        (self.root / "patches").mkdir()
+        self.host_dir = devhost.dist_host_dir(self.root)
+        (self.host_dir / "sdk").mkdir(parents=True)
+        (self.host_dir / "sdk" / "ABI").write_text("abi\n")
+        self.exe = devhost.host_exe(self.host_dir)
+        self.exe.write_text("")
+
+    def touch(self, path: Path, mtime: float):
+        os.utime(path, (mtime, mtime))
+
+    def test_checkout_is_told_by_the_build_scripts(self):
+        self.assertFalse(devhost.is_checkout(self.root))
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts" / "build_host.sh").write_text("")
+        (self.root / "src" / "CMakeLists.txt").write_text("")
+        self.assertTrue(devhost.is_checkout(self.root))
+
+    def test_host_newer_than_sources_is_fresh(self):
+        self.touch(self.root / "src" / "main.cpp", 1000)
+        self.touch(self.exe, 2000)
+        self.assertFalse(devhost.is_stale(self.root, self.host_dir))
+
+    def test_changed_source_or_patch_makes_the_host_stale(self):
+        self.touch(self.exe, 2000)
+        self.touch(self.root / "src" / "main.cpp", 1000)
+        (self.root / "patches" / "0001.patch").write_text("")
+        self.touch(self.root / "patches" / "0001.patch", 3000)
+        self.assertTrue(devhost.is_stale(self.root, self.host_dir))
+
+    def test_missing_host_is_stale(self):
+        self.exe.unlink()
+        self.assertTrue(devhost.is_stale(self.root, self.host_dir))
+
+    def test_fresh_host_is_not_rebuilt(self):
+        self.touch(self.root / "src" / "main.cpp", 1000)
+        self.touch(self.exe, 2000)
+        with mock.patch.object(devhost.subprocess, "run") as run:
+            self.assertEqual(devhost.ensure_host(self.root), self.host_dir)
+        run.assert_not_called()
+
+    def test_stale_host_runs_build_host(self):
+        self.touch(self.exe, 1000)
+        self.touch(self.root / "src" / "main.cpp", 2000)
+        with mock.patch.object(devhost.subprocess, "run") as run, mock.patch.object(devhost, "find_bash", return_value="bash"):
+            devhost.ensure_host(self.root)
+        self.assertEqual(run.call_args.args[0], ["bash", str(self.root / "scripts" / "build_host.sh")])
 
 
 if __name__ == "__main__":

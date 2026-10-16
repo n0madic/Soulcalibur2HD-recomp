@@ -131,8 +131,12 @@ scripts/build_host.sh     # clones the pinned toolkit, applies patches/, builds 
 SC2HD_TARGET=windows scripts/build_host.sh   # cross-compile for Windows with MinGW-w64 (clang preferred) into dist/host-windows
                           # (in Git Bash on Windows, plain scripts/build_host.sh builds the same natively)
 scripts/package.sh        # a dist/sc2hd-<version>-<os>-<arch>.zip for every host that is built (macOS/Linux, Windows)
-./sc2hd.py --pkg …                # in a checkout the launcher uses dist/host
+./sc2hd.py --pkg …       # in a checkout the launcher builds and runs the host from dist/ itself
 ```
+
+In a source checkout `./sc2hd.py` needs no `--host-dir`: it uses `dist/host` (`dist/host-windows` on Windows) and runs
+`scripts/build_host.sh` first if the host is missing or older than `src/`, `patches/` or the build scripts (on Windows it needs Git
+for Windows' bash). `--no-host-build` skips that and uses `dist/` as it is.
 
 ## License
 

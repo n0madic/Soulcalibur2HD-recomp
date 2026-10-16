@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import runner
+from . import devhost, runner
 from .game import GameError, GameFiles, from_install, install
 from .lift import PROFILES, LiftResult, lift_game
 from .module import ModuleInputs, build_module, module_name
@@ -25,7 +25,7 @@ from .toolchain import ToolchainError, describe, find_compiler, host_key
 
 LOG = logging.getLogger("sc2hd")
 DEFAULT_DATA_DIR = "data"   # relative to the directory the launcher is started from
-ROOT = Path(__file__).resolve().parents[2]   # the release directory, or the source checkout
+ROOT = Path(__file__).resolve().parents[2]   # the release directory, or the source checkout (devhost.is_checkout)
 
 
 def default_data() -> Path:
@@ -100,9 +100,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("command", nargs="?", choices=("build", "run", "monolith"),
                     help="default: build, then run. monolith: personal use, link the game into one executable")
     ap.add_argument("--data", type=Path, default=default_data(), help="where derived data lives (default: %(default)s)")
-    ap.add_argument("--host-dir", type=Path, default=next((d for d in (ROOT / "host", ROOT / "dist" / "host") if d.exists()),
-                                                           ROOT / "host"),
-                    help="directory with sc2hd_host and sdk/ (default: %(default)s)")
+    ap.add_argument("--host-dir", type=Path,
+                    help="directory with sc2hd_host and sdk/ (default: host/ of a release; in a source checkout dist/host, "
+                         "or dist/host-windows on Windows, rebuilt by scripts/build_host.sh when src/ or patches/ are newer)")
+    ap.add_argument("--no-host-build", action="store_true", help="in a source checkout, use the host in dist/ as it is")
     src = ap.add_argument_group("the game (first run; remembered in the data directory afterwards)")
     src.add_argument("--pkg", type=Path, action="append", default=[], metavar="PKG|ZIP",
                      help="a package or a zip holding it (repeatable: the game first, then its optional 01.01 update)")
@@ -122,6 +123,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.af is not None and not 1 <= args.af <= 16:
         ap.error("--af expects a number 1..16")
+    if args.host_dir is None:
+        if devhost.is_checkout(ROOT):
+            args.host_dir = devhost.dist_host_dir(ROOT) if args.no_host_build else devhost.ensure_host(ROOT)
+        else:
+            args.host_dir = ROOT / "host"
     host, sdk = find_host(args.host_dir)
     hdd0 = args.data / "hdd0"
     try:
