@@ -10,7 +10,7 @@ cellAudio: diagnostics, and a mix paced on the block clock on Windows.
 
 ---
 diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
-index b51fb7c..66111f9 100644
+index b51fb7c..0c1590a 100644
 --- a/libs/audio/cellAudio.c
 +++ b/libs/audio/cellAudio.c
 @@ -188,6 +188,7 @@ static int audio_backend_init(void)
@@ -30,7 +30,34 @@ index b51fb7c..66111f9 100644
              fprintf(stderr, "[cellAudio] GetCurrentPadding failed 0x%08lX -- clock pacing%c", (unsigned long)hr, 10);
          return -1;
      }
-@@ -548,9 +549,45 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+@@ -534,6 +535,26 @@ static void audio_notify_event_queues(void)
+     }
+ }
+ 
++/* The loudest sample of the block just mixed (AUDIO_PEAK). */
++static float audio_mix_peak(void)
++{
++    float pk = 0.0f;
++    for (u32 i = 0; i < CELL_AUDIO_BLOCK_SAMPLES * 2; i++) {
++        const float a = s_mix_buffer[i] < 0 ? -s_mix_buffer[i] : s_mix_buffer[i];
++        if (a > pk) pk = a;
++    }
++    return pk;
++}
++
++/* AUDIO_WAV=<file>: append the final mix as raw f32le stereo 48 kHz
++ * (ffmpeg -f f32le -ar 48000 -ac 2 -i <file>). */
++static void audio_dump_mix(void)
++{
++    static FILE* wf = (FILE*)-1;
++    if (wf == (FILE*)-1) { const char* e = getenv("AUDIO_WAV"); wf = e ? fopen(e, "wb") : NULL; }
++    if (wf) fwrite(s_mix_buffer, sizeof(float), CELL_AUDIO_BLOCK_SAMPLES * 2, wf);
++}
++
+ #ifdef _WIN32
+ static unsigned __stdcall audio_mix_thread_func(void* arg)
+ {
+@@ -548,9 +569,45 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
       * With no device, pace on the performance counter instead. */
      LARGE_INTEGER qf, q0; QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&q0);
      unsigned long long blocks = 0;
@@ -76,7 +103,26 @@ index b51fb7c..66111f9 100644
          if (room < 0) {
              LARGE_INTEGER now; QueryPerformanceCounter(&now);
              const long long due = q0.QuadPart +
-@@ -599,6 +636,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+@@ -568,16 +625,10 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+         /* AUDIO_PEAK=1: report the mixed block's peak amplitude periodically so
+          * "is any port producing sound" is answerable (LBP Bink movie audio). */
+         { static int _ap = -1; if (_ap < 0) _ap = getenv("AUDIO_PEAK") ? 1 : 0;
+-          if (_ap) { static unsigned _n = 0; float pk = 0.0f;
+-            for (u32 i = 0; i < CELL_AUDIO_BLOCK_SAMPLES * 2; i++) {
+-                float a = s_mix_buffer[i]; if (a < 0) a = -a; if (a > pk) pk = a; }
++          if (_ap) { static unsigned _n = 0; const float pk = audio_mix_peak();
+             if ((++_n % 200) == 0 || (pk > 0.001f && _n < 40))
+                 fprintf(stderr, "[audio-peak] block#%u peak=%.4f\n", _n, pk); } }
+-        /* AUDIO_WAV=<file>: append the final mix as raw f32le stereo 48 kHz
+-         * (ffmpeg -f f32le -ar 48000 -ac 2 -i <file>). */
+-        { static FILE* _wf = (FILE*)-1;
+-          if (_wf == (FILE*)-1) { const char* e = getenv("AUDIO_WAV"); _wf = e ? fopen(e, "wb") : NULL; }
+-          if (_wf) fwrite(s_mix_buffer, sizeof(float), CELL_AUDIO_BLOCK_SAMPLES * 2, _wf); }
++        audio_dump_mix();
+         audio_backend_submit(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES);
+         /* AUDIO_RATE=1: blocks mixed vs real time, and frames dropped. */
+         { static int on = -1; if (on < 0) on = getenv("AUDIO_RATE") ? 1 : 0;
+@@ -599,6 +650,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
          audio_notify_event_queues();
      }
  
@@ -84,7 +130,7 @@ index b51fb7c..66111f9 100644
      printf("[cellAudio] Mixing thread stopped\n");
      return 0;
  }
-@@ -608,10 +646,21 @@ static void* audio_mix_thread_func(void* arg)
+@@ -608,10 +660,18 @@ static void* audio_mix_thread_func(void* arg)
      (void)arg;
      printf("[cellAudio] Mixing thread started\n");
  
@@ -93,20 +139,17 @@ index b51fb7c..66111f9 100644
          audio_mix_one_block();
          audio_backend_submit(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES);
          audio_notify_event_queues();
-+        /* AUDIO_WAV=<file>: the mix as raw f32le stereo 48 kHz. */
-+        { static FILE* wf = (FILE*)-1;
-+          if (wf == (FILE*)-1) { const char* e = getenv("AUDIO_WAV"); wf = e ? fopen(e, "wb") : NULL; }
-+          if (wf) fwrite(s_mix_buffer, sizeof(float), CELL_AUDIO_BLOCK_SAMPLES * 2, wf); }
++        audio_dump_mix();
 +        /* AUDIO_PEAK=1: the loudest sample of every second of mixed output (187.5 blocks of 256). */
 +        { static int pk_on = -1; if (pk_on < 0) pk_on = getenv("AUDIO_PEAK") ? 1 : 0;
 +          if (pk_on) {
-+              for (u32 i = 0; i < CELL_AUDIO_BLOCK_SAMPLES * 2; i++) { float a = s_mix_buffer[i] < 0 ? -s_mix_buffer[i] : s_mix_buffer[i]; if (a > peak) peak = a; }
++              const float pk = audio_mix_peak(); if (pk > peak) peak = pk;
 +              if (++blocks % 188 == 0) { fprintf(stderr, "[audio-peak] %lu s: peak %.4f\n", blocks / 188, peak); peak = 0.0f; }
 +          } }
  
          u32 queued = audio_backend_queued_samples();
          if (queued > CELL_AUDIO_BLOCK_SAMPLES * 4) {
-@@ -1074,7 +1123,7 @@ s32 cellAudioGetPortConfig(u32 portNum, CellAudioPortConfig* config)
+@@ -1074,7 +1134,7 @@ s32 cellAudioGetPortConfig(u32 portNum, CellAudioPortConfig* config)
      vm_write32(cfg + 24, port->buf_size);                                   /* portSize */
      vm_write32(cfg + 28, (u32)port->port_addr);                             /* portAddr */
  

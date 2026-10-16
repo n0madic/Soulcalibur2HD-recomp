@@ -37,18 +37,25 @@ index 1b6518b..0d854fd 100644
  # Runtime core (syscalls, PPU, SPU, memory)
  file(GLOB_RECURSE RUNTIME_SOURCES
 diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
-index 65630cb..2c2a2e0 100644
+index 65630cb..5a0364c 100644
 --- a/libs/spurs/cellSpurs.c
 +++ b/libs/spurs/cellSpurs.c
-@@ -2536,7 +2536,7 @@ static int jg_wait(u32 ea)
+@@ -2536,13 +2536,8 @@ static int jg_wait(u32 ea)
   * this queue, and would only notify again after the event arrives -- so
   * signalling at walker exit deadlocks both sides. Signal when the WORK
   * completes: at END, and on reaching a guard with jobs run this lap. */
 -#ifdef _WIN32
-+#ifdef _MSC_VER
- #  define SPURS_JOB_TLS __declspec(thread)
- #else
- #  define SPURS_JOB_TLS __thread
+-#  define SPURS_JOB_TLS __declspec(thread)
+-#else
+-#  define SPURS_JOB_TLS __thread
+-#endif
+-extern SPURS_JOB_TLS uint32_t g_spurs_job_mbox, g_spurs_job_mbox_intr, g_spurs_job_cmd;
+-extern SPURS_JOB_TLS int g_spurs_job_mbox_valid;
++extern SPU_THREAD_LOCAL uint32_t g_spurs_job_mbox, g_spurs_job_mbox_intr, g_spurs_job_cmd;
++extern SPU_THREAD_LOCAL int g_spurs_job_mbox_valid;
+ 
+ /* SPURS_EVENT_D3=<n>: probe. The value a job query returns to the PPU is read
+  * from the completion event's data3 field (the guest stores r7 at sp+0xB8 and
 diff --git a/libs/system/cellSysutil.c b/libs/system/cellSysutil.c
 index 252c3e8..b212982 100644
 --- a/libs/system/cellSysutil.c
@@ -149,31 +156,56 @@ index 1cd5cef..f178801 100644
  
  /* SPURS task-launch interception at a trampoline hop (milestone: SPURS kernel).
 diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
-index 09a8d6b..f13d5a0 100644
+index 09a8d6b..a9ecc68 100644
 --- a/runtime/spu/spurs_job.c
 +++ b/runtime/spu/spurs_job.c
-@@ -135,7 +135,7 @@ const uint8_t* spurs_job_ls_for_handle(uint32_t handle)
+@@ -135,16 +135,11 @@ const uint8_t* spurs_job_ls_for_handle(uint32_t handle)
   * flight. As plain globals these were clobbered between a job finishing and its
   * own completion being pushed, so a query could be answered with an unrelated
   * job's mailbox. Per-thread keeps each job paired with its own answer. */
 -#ifdef _WIN32
-+#ifdef _MSC_VER
- #  define SPURS_JOB_TLS __declspec(thread)
- #else
- #  define SPURS_JOB_TLS __thread
+-#  define SPURS_JOB_TLS __declspec(thread)
+-#else
+-#  define SPURS_JOB_TLS __thread
+-#endif
+-SPURS_JOB_TLS uint32_t g_spurs_job_mbox, g_spurs_job_mbox_intr;
++SPU_THREAD_LOCAL uint32_t g_spurs_job_mbox, g_spurs_job_mbox_intr;
+ /* The command this job ran, read from its own command block. Only a query
+  * expects an answer back through the completion event. */
+-SPURS_JOB_TLS uint32_t g_spurs_job_cmd;
+-SPURS_JOB_TLS int g_spurs_job_mbox_valid;
++SPU_THREAD_LOCAL uint32_t g_spurs_job_cmd;
++SPU_THREAD_LOCAL int g_spurs_job_mbox_valid;
+ 
+ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+                       uint32_t job_ea, uint32_t job_desc_size)
 diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
-index 042f131..fe7f60c 100644
+index 042f131..6f47fff 100644
 --- a/runtime/syscalls/sys_ppu_thread.c
 +++ b/runtime/syscalls/sys_ppu_thread.c
-@@ -9,7 +9,7 @@
+@@ -3,19 +3,15 @@
+  */
+ 
+ #include <setjmp.h>
++#include "../ppu/ppu_tls.h"   /* PPU_THREAD_LOCAL, for the thread-exit jump buffer below */
+ 
+ /* sys_ppu_thread_exit never returns on hardware. Returning CELL_OK to the
+  * guest lets it run on past the call: Twisted Metal has a thread that exits
   * from inside a loop and so called exit 1,435 times in one run, staying alive
   * and holding whatever it held. Arm a jump in the thread proc and unwind to it
   * instead. PS3_NO_THREAD_EXIT_UNWIND=1 restores the old behaviour. */
 -#if defined(_WIN32)
-+#if defined(_MSC_VER)
- #  define PPU_TLS __declspec(thread)
- #else
- #  define PPU_TLS __thread
+-#  define PPU_TLS __declspec(thread)
+-#else
+-#  define PPU_TLS __thread
+-#endif
+-static PPU_TLS jmp_buf s_exit_jmp;
+-static PPU_TLS int     s_exit_armed = 0;
++static PPU_THREAD_LOCAL jmp_buf s_exit_jmp;
++static PPU_THREAD_LOCAL int     s_exit_armed = 0;
+ 
+ #include <stddef.h>
+ #include "sys_ppu_thread.h"
 diff --git a/third_party/at3_stub/at3_stub.c b/third_party/at3_stub/at3_stub.c
 new file mode 100644
 index 0000000..9de4e96

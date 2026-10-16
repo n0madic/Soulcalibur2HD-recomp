@@ -11,7 +11,7 @@ Metal backend: menu, key events, anti-aliasing and window handling.
 
 ---
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index d04b34e..3de2881 100644
+index d04b34e..eee286d 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
 @@ -74,6 +74,16 @@
@@ -74,7 +74,15 @@ index d04b34e..3de2881 100644
      s_window = [[NSWindow alloc]
          initWithContentRect:frame
                    styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-@@ -1149,6 +1189,8 @@ static int samp_slot_for(const rsx_texture_state* t)
+@@ -521,6 +561,7 @@ static int create_placeholders(void)
+     sd.magFilter = MTLSamplerMinMagFilterLinear;
+     sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+     sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
++    /* Also the draw engine's display pass samples through it (linear, clamped) when it filters or scales. */
+     s_default_sampler = [s_dev newSamplerStateWithDescriptor:sd];
+     if (!s_default_sampler) return -1;
+ 
+@@ -1149,6 +1190,8 @@ static int samp_slot_for(const rsx_texture_state* t)
      if (max_lod < min_lod) max_lod = min_lod;
      sd.lodMinClamp = min_lod;
      sd.lodMaxClamp = max_lod;
@@ -83,11 +91,10 @@ index d04b34e..3de2881 100644
      sd.sAddressMode = gcm_wrap_to_metal(t->address);
      sd.tAddressMode = gcm_wrap_to_metal(t->address >> 8);
      sd.rAddressMode = gcm_wrap_to_metal(t->address >> 16);
-@@ -2132,6 +2174,9 @@ static void release_surfaces(void)
+@@ -2132,6 +2175,8 @@ static void release_surfaces(void)
  static MTLPixelFormat             s_eng_blit_pso_fmt;
  static id<MTLRenderPipelineState> s_eng_depth_pso;
  static id<MTLSamplerState>        s_eng_point_sampler;
-+static id<MTLSamplerState>        s_eng_linear_sampler;
 +static id<MTLRenderPipelineState> s_eng_fxaa_pso;
 +static MTLPixelFormat             s_eng_fxaa_pso_fmt;
  
@@ -175,28 +182,15 @@ index d04b34e..3de2881 100644
  
  static int eng_stage_reserve(u32 bytes, u32* out_off)
  {
-@@ -2275,7 +2388,10 @@ static int eng_init(void* user, u32 width, u32 height)
-     sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
-     sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
-     s_eng_point_sampler = [s_dev newSamplerStateWithDescriptor:sd];
--    return s_eng_point_sampler ? 0 : -1;
-+    sd.minFilter = MTLSamplerMinMagFilterLinear;
-+    sd.magFilter = MTLSamplerMinMagFilterLinear;
-+    s_eng_linear_sampler = [s_dev newSamplerStateWithDescriptor:sd];
-+    return (s_eng_point_sampler && s_eng_linear_sampler) ? 0 : -1;
- }
- 
- static void eng_shutdown(void* user)
-@@ -2298,6 +2414,8 @@ static void eng_shutdown(void* user)
+@@ -2298,6 +2411,7 @@ static void eng_shutdown(void* user)
      s_eng_blit_pso = nil;
      s_eng_depth_pso = nil;
      s_eng_point_sampler = nil;
-+    s_eng_linear_sampler = nil;
 +    s_eng_fxaa_pso = nil;
      s_eng_active = 0;
  }
  
-@@ -2632,6 +2750,7 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
+@@ -2632,6 +2746,7 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
                                     : MTLSamplerMipFilterNearest;
      sd.lodMinClamp = d->min_lod;
      sd.lodMaxClamp = d->max_lod;
@@ -204,7 +198,7 @@ index d04b34e..3de2881 100644
      sd.sAddressMode = gcm_wrap_to_metal(d->wrap_s);
      sd.tAddressMode = gcm_wrap_to_metal(d->wrap_t);
      sd.rAddressMode = gcm_wrap_to_metal(d->wrap_r);
-@@ -2985,34 +3104,51 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -2985,34 +3100,51 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
  
  /* Put a surface on the drawable. A straight blit would need matching formats
   * and sizes; a full-screen sample needs neither, and the guest's surfaces are
@@ -270,11 +264,11 @@ index d04b34e..3de2881 100644
      [e setFragmentTexture:src atIndex:0];
 -    [e setFragmentSamplerState:s_eng_point_sampler atIndex:0];
 +    const int scaled = (vw != sw || vh != sh);
-+    [e setFragmentSamplerState:((s_fxaa || scaled) ? s_eng_linear_sampler : s_eng_point_sampler) atIndex:0];
++    [e setFragmentSamplerState:((s_fxaa || scaled) ? s_default_sampler : s_eng_point_sampler) atIndex:0];
      [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
      [e endEncoding];
  }
-@@ -3038,6 +3174,14 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3038,6 +3170,14 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
              if (s_headless) {
                  dst = s_offscreen;
              } else {
@@ -289,7 +283,7 @@ index d04b34e..3de2881 100644
                  drawable = [s_layer nextDrawable];
                  if (!drawable) {           /* compositor is busy; skip */
                      dispatch_semaphore_signal(s_inflight);
-@@ -3065,6 +3209,7 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3065,6 +3205,7 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
          } else {
              [cb commit];
              [cb waitUntilCompleted];
@@ -297,7 +291,7 @@ index d04b34e..3de2881 100644
          }
  
          if (s_eng_dropped) {
-@@ -3078,14 +3223,10 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3078,14 +3219,10 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
      }
  }
  
@@ -315,7 +309,7 @@ index d04b34e..3de2881 100644
      if ([src pixelFormat] != MTLPixelFormatRGBA8Unorm &&
          [src pixelFormat] != MTLPixelFormatBGRA8Unorm) return;
      size_t w = [src width], h = [src height];
-@@ -3109,11 +3250,39 @@ static void eng_dump_frame(id<MTLTexture> src)
+@@ -3109,11 +3246,39 @@ static void eng_dump_frame(id<MTLTexture> src)
              fwrite(rgb, 1, 3, f);
          }
          fclose(f);
@@ -356,7 +350,7 @@ index d04b34e..3de2881 100644
  static void eng_present(void* user, u32 surface)
  {
      (void)user;
-@@ -3177,6 +3346,15 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
+@@ -3177,6 +3342,15 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
          const char* hl = getenv("PS3RECOMP_METAL_HEADLESS");
          s_headless = (hl && *hl && *hl != '0');
  
@@ -372,7 +366,7 @@ index d04b34e..3de2881 100644
          s_dev = MTLCreateSystemDefaultDevice();
          if (!s_dev) {
              fprintf(stderr, "[RSX metal] no Metal device available\n");
-@@ -3312,9 +3490,22 @@ static int pump_messages_impl(void)
+@@ -3312,9 +3486,22 @@ static int pump_messages_impl(void)
                                                  inMode:NSDefaultRunLoopMode
                                                 dequeue:YES];
              if (!ev) break;

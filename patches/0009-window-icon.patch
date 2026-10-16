@@ -20,7 +20,7 @@ index f60b24a..a690611 100644
      RegisterClassExA(&wc);
  
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index 3de2881..0b2d634 100644
+index eee286d..a2aeb6f 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
 @@ -479,10 +479,14 @@ - (void)quit:(id)sender { (void)sender; s_closed = 1; }
