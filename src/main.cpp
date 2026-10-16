@@ -361,21 +361,19 @@ static DWORD WINAPI frame_clock(LPVOID)
 
     unsigned  last_flip = 0;
     ULONGLONG next_tick = GetTickCount64();
+    /* The vblank period is 1000/60 ms: 16 ms whole plus two thirds of a millisecond every tick, carried in thirds. */
+    unsigned tick_thirds = 0;
     /* At most one guest frame per vblank, as on a PS3 driving a 60 Hz output. Presenting completes the flip, and
-     * the game renders its next frame as soon as it does: on a 120 Hz display the Vulkan swapchain let it flip about
-     * 110 times a second. The Metal path is left as it was. */
-#ifdef __APPLE__
-    const int flip_per_vblank = 0;
-#else
-    const int flip_per_vblank = 1;
-#endif
+     * the game renders its next frame as soon as it does; its animation advances a step per frame, so on a 120 Hz
+     * display (the Vulkan swapchain, or a ProMotion Mac's CAMetalLayer) it flipped about 120 times a second and
+     * played at double speed. */
     unsigned vblanks = 0, presented_vblank = ~0u;
-#define FLIP_ALLOWED() (!flip_per_vblank || presented_vblank != vblanks)
+#define FLIP_ALLOWED() (presented_vblank != vblanks)
 
     for (;;) {
         /* 1 ms, not 4: this thread also drains the FIFO, and a frame the guest finished while it slept waited out the
          * rest of the sleep before being drained and flipped (about 5 ms a frame of a 60 fps fight). The ticks below
-         * keep their own 16 ms clock. */
+         * keep their own 60 Hz clock. */
         Sleep(1);
         ULONGLONG now = GetTickCount64();
 
@@ -398,7 +396,9 @@ static DWORD WINAPI frame_clock(LPVOID)
              * labels the game's per-frame logic blocks on, so it has to keep
              * advancing at 60 Hz even while present() throttles. */
             if (rsx_ok) cellGcm_rsx_process_fifo();
-            next_tick += 16;             /* ~60 Hz */
+            next_tick += 16;             /* 60 Hz: 16 ms, plus 1 ms on two ticks of every three */
+            tick_thirds += 2;
+            if (tick_thirds >= 3) { next_tick++; tick_thirds -= 3; }
             fired++;
         }
         if (fired >= 240) next_tick = now;   /* fell too far behind -- resync */
@@ -412,7 +412,7 @@ static DWORD WINAPI frame_clock(LPVOID)
               t0 = now; f0 = f;
           } }
 
-        /* Drain at the outer cadence too, not only on the 16 ms tick: titles
+        /* Drain at the outer cadence too, not only on the 60 Hz tick: titles
          * fence every render pass on a label the drain writes, and one wave of
          * those at 16 ms apiece paces the guest into single-figure frame rates.
          * The real RSX writes them in microseconds. */

@@ -150,10 +150,13 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
     the game thread in a fight). The frame thread limits the frame rate, so it gained nothing there, and with the old 4 ms
     audio gap it made the late audio blocks worse (17-20%).
   - `main.cpp`: a guest frame is presented (and its flip completed) at most once per 60 Hz vblank, as on a PS3 driving a 60 Hz
-    output. On a 120 Hz display the FIFO swapchain otherwise let the game flip about 110 times a second.
-  - Only `patches/0008` (D3D12), the Windows build of the Vulkan backend in `0006`, the WASAPI mix thread in `0003` and the 1 ms
-    frame-loop sleep are Windows-only. The rest of `0005` and `0006` change the Vulkan backend, the draw engine and NV3089, which Linux
-    shares (macOS shares the draw engine and NV3089), and the vblank cap applies everywhere but macOS. On Linux they fixed
+    output. On a 120 Hz display the FIFO swapchain otherwise let the game flip about 110 times a second. The game's
+    animation advances a step per frame, so that is double speed: on a ProMotion Mac (CAMetalLayer at 120 Hz) menus and
+    movies ran at 120 frames a second once the frame thread had become fast enough. The vblank clock is 1000/60 ms (it
+    was a flat 16 ms, i.e. 62.5 Hz and everything 4% fast).
+  - Only `patches/0008` (D3D12), the Windows build of the Vulkan backend in `0006`, and the WASAPI mix thread in `0003` are
+    Windows-only (the 1 ms frame-loop sleep is not). The rest of `0005` and `0006` change the Vulkan backend, the draw engine and NV3089, which Linux
+    shares (macOS shares the draw engine and NV3089), and the vblank cap applies everywhere. On Linux they fixed
     the same magenta picture after the intro: the first commit, run in WSLg on llvmpipe, showed only magenta in the attract
     demos at 0-8 frames a second; with the patches the demos draw correctly at about 10 (still the CPU rasteriser).
 - `patches/0002` and the other area patches: the `if (_n++ < N)` log caps used signed counters that wrapped negative after 2^31 calls and then printed on every call (millions of `[spu] drain-resume` lines in battle); they now saturate.
