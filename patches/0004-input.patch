@@ -19,10 +19,18 @@ index 94de794..85feb90 100644
      set_source_files_properties(
          "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_metal_backend.m"
 diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
-index f2b4c11..c6f3cfa 100644
+index f2b4c11..947b7b7 100644
 --- a/libs/input/cellPad.c
 +++ b/libs/input/cellPad.c
-@@ -75,6 +75,21 @@ typedef struct {
+@@ -11,6 +11,7 @@
+  */
+ 
+ #include <time.h>
++#include "ps3emu/log_first.h"
+ #include "cellPad.h"
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -75,6 +76,21 @@ typedef struct {
      u8   press_r1;
  } PadHostState;
  
@@ -44,7 +52,7 @@ index f2b4c11..c6f3cfa 100644
  static int           s_pad_initialized = 0;
  static u32           s_max_connect = 0;
  static u32           s_port_setting[CELL_PAD_MAX_PORT_NUM];
-@@ -84,36 +99,16 @@ static int s_data_fresh[PAD_MAX_HOST_PORTS];
+@@ -84,36 +100,16 @@ static int s_data_fresh[PAD_MAX_HOST_PORTS];
  
  #if PAD_BACKEND_SDL2
  static SDL_GameController* s_sdl_controllers[PAD_MAX_HOST_PORTS];
@@ -89,7 +97,7 @@ index f2b4c11..c6f3cfa 100644
  /* Keyboard fallback for port 0.
   *
   * The only backend here is XInput, so on a machine with no controller plugged
-@@ -139,7 +134,86 @@ static int pad_host_window_focused(void)
+@@ -139,7 +135,86 @@ static int pad_host_window_focused(void)
      GetWindowThreadProcessId(fg, &pid);
      return pid == GetCurrentProcessId();
  }
@@ -176,7 +184,7 @@ index f2b4c11..c6f3cfa 100644
  static void pad_poll_keyboard(void)
  {
      static int off = -1;
-@@ -147,6 +221,7 @@ static void pad_poll_keyboard(void)
+@@ -147,6 +222,7 @@ static void pad_poll_keyboard(void)
      if (off) return;
  
      PadHostState* hs = &s_host_state[0];
@@ -184,7 +192,7 @@ index f2b4c11..c6f3cfa 100644
      if (!pad_host_window_focused()) {
          /* Release everything on focus loss, or a key held while alt-tabbing
           * would stay down forever. */
-@@ -158,18 +233,18 @@ static void pad_poll_keyboard(void)
+@@ -158,18 +234,18 @@ static void pad_poll_keyboard(void)
      }
  
      static const struct { int vk; u16 btn; } map[] = {
@@ -211,7 +219,7 @@ index f2b4c11..c6f3cfa 100644
  
      hs->buttons   = btns;
      hs->connected = 1;
-@@ -188,6 +263,34 @@ static void pad_poll_keyboard(void)
+@@ -188,6 +264,34 @@ static void pad_poll_keyboard(void)
  }
  #endif
  
@@ -246,7 +254,7 @@ index f2b4c11..c6f3cfa 100644
  static void pad_poll_xinput(void)
  {
      for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
-@@ -238,16 +341,7 @@ static void pad_poll_xinput(void)
+@@ -238,16 +342,7 @@ static void pad_poll_xinput(void)
          s_host_state[i].trigger_r2 = gp->bRightTrigger;
  
          /* Pressure-sensitive buttons: XInput has digital only, so 0 or 255 */
@@ -264,7 +272,7 @@ index f2b4c11..c6f3cfa 100644
      }
  }
  
-@@ -287,10 +381,12 @@ static u8 pad_sdl_trigger_to_u8(int raw)
+@@ -287,10 +382,12 @@ static u8 pad_sdl_trigger_to_u8(int raw)
      return (u8)val;
  }
  
@@ -278,7 +286,7 @@ index f2b4c11..c6f3cfa 100644
      for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
          if (!s_sdl_controllers[i]) {
              /* Try to open newly connected controllers */
-@@ -301,7 +397,7 @@ static void pad_poll_sdl2(void)
+@@ -301,7 +398,7 @@ static void pad_poll_sdl2(void)
  
          SDL_GameController* gc = s_sdl_controllers[i];
          if (!gc || !SDL_GameControllerGetAttached(gc)) {
@@ -287,7 +295,7 @@ index f2b4c11..c6f3cfa 100644
              if (gc) {
                  SDL_GameControllerClose(gc);
                  s_sdl_controllers[i] = NULL;
-@@ -309,7 +405,7 @@ static void pad_poll_sdl2(void)
+@@ -309,7 +406,7 @@ static void pad_poll_sdl2(void)
              continue;
          }
  
@@ -296,7 +304,7 @@ index f2b4c11..c6f3cfa 100644
  
          u16 btns = 0;
          if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_BACK))          btns |= CELL_PAD_CTRL_SELECT;
-@@ -333,59 +429,99 @@ static void pad_poll_sdl2(void)
+@@ -333,59 +430,99 @@ static void pad_poll_sdl2(void)
          if (lt > 3000) btns |= CELL_PAD_CTRL_L2;
          if (rt > 3000) btns |= CELL_PAD_CTRL_R2;
  
@@ -430,7 +438,7 @@ index f2b4c11..c6f3cfa 100644
  }
  
  #endif /* PAD_BACKEND_SDL2 */
-@@ -439,7 +575,7 @@ static void pad_poll_backend(void)
+@@ -439,7 +576,7 @@ static void pad_poll_backend(void)
  #elif PAD_BACKEND_SDL2
      pad_poll_sdl2();
  #endif
@@ -439,16 +447,16 @@ index f2b4c11..c6f3cfa 100644
      if (!s_host_state[0].connected) pad_poll_keyboard();
  #endif
  }
-@@ -985,7 +1121,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
+@@ -985,7 +1122,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
            vm_write32((unsigned long long)ea + _o, *(u32*)((char*)info + _o)); }
  
      { static int _n = 0;
 -      if (_n++ < 2)
-+      if ((_n < 2 && ++_n))
++      if (PS3_LOG_FIRST(_n, 2))
            printf("[cellPad] PeriphGetInfo(max=%u now=%u) -> STANDARD class\n",
                   info->max_connect, connected); }
      return CELL_OK;
-@@ -1082,13 +1218,17 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
+@@ -1082,13 +1219,17 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
  #endif
  
  #if PAD_BACKEND_SDL2

@@ -7,22 +7,52 @@ PPU runtime and system-library HLE fixes Soulcalibur II HD needs.
   CELL_OK with an all-zero buffer the game decoded as its options (picture at a tenth of its brightness). The saves
   live under PS3_HDD0_ROOT, not in the process's working directory.
 - PS3_DEV_FLASH may list several roots (':' on POSIX, ';' on Windows); the first one that holds the file wins.
+  One resolver, ps3_dev_flash_path (sys_fs.c), serves both halves of the split filesystem, cellFs (ppu_fs) and the raw
+  sys_fs syscalls; sys_fs used to take the whole list as a single directory.
+- PS3_LOG_FIRST (include/ps3emu/log_first.h) is the saturating counter for the "first n times" log lines.
 - cellNetCtl: offline, NetStartDialog ends with CELL_NET_CTL_ERROR_DIALOG_CANCELED instead of "connected", so the
   game shows its own "sign in to PlayStation Network" message and the menu stays usable. PS3_NET_ONLINE=1 restores
   the old answers.
-- Log counters in cellFs, ppu_hle and ppu_loader saturate (see the same change in the other patches).
+- Log counters in cellFs, ppu_hle and ppu_loader use it (as do the other patches).
 
 ---
+diff --git a/include/ps3emu/log_first.h b/include/ps3emu/log_first.h
+new file mode 100644
+index 0000000..73cba23
+--- /dev/null
++++ b/include/ps3emu/log_first.h
+@@ -0,0 +1,13 @@
++/*
++ * ps3recomp - log a diagnostic only the first few times
++ */
++#ifndef PS3RECOMP_LOG_FIRST_H
++#define PS3RECOMP_LOG_FIRST_H
++
++/* True for the first `limit` evaluations of the counter `ctr` (a static variable of the call site), then false:
++ *     static int _n = 0; if (PS3_LOG_FIRST(_n, 8)) fprintf(stderr, ...);
++ * The counter stops at the limit instead of counting on, so a hot path cannot wrap it past 2^31 and start
++ * printing on every call again. */
++#define PS3_LOG_FIRST(ctr, limit) ((ctr) < (limit) && ++(ctr))
++
++#endif /* PS3RECOMP_LOG_FIRST_H */
 diff --git a/libs/filesystem/cellFs.c b/libs/filesystem/cellFs.c
-index 5166a47..3c5af6d 100644
+index 5166a47..c8ae8bd 100644
 --- a/libs/filesystem/cellFs.c
 +++ b/libs/filesystem/cellFs.c
-@@ -500,7 +500,7 @@ s32 cellFsRead(CellFsFd fd, void* buf, u64 nbytes, u64* nread)
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "cellFs.h"
++#include "ps3emu/log_first.h"
+ #include "../../runtime/platform/win32_backtrace.h"   /* RtlCaptureStackBackTrace / GetModuleHandleA on POSIX */
+ #include "ps3emu/endian.h"
+ #include <stdio.h>
+@@ -500,7 +501,7 @@ s32 cellFsRead(CellFsFd fd, void* buf, u64 nbytes, u64* nread)
      }
  
      { static int _n = 0;
 -      if (_n++ < 32)
-+      if ((_n < 32 && ++_n))
++      if (PS3_LOG_FIRST(_n, 32))
            { printf("[cellFs] Read(fd=%d, buf=0x%08X, %llu bytes) -> %llu", fd,
                     (uint32_t)(uintptr_t)buf,
                     (unsigned long long)nbytes, (unsigned long long)bytes_read);
@@ -218,88 +248,135 @@ index 79ea8ca..85907c3 100644
  
  s32 cellSaveDataDelete(u32 version, const char* dirName,
 diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
-index e8f6c2b..0360725 100644
+index e8f6c2b..a84ce62 100644
 --- a/runtime/ppu/ppu_fs.cpp
 +++ b/runtime/ppu/ppu_fs.cpp
-@@ -111,7 +111,27 @@ static void host_path(char* out, size_t cap, const char* guest)
+@@ -84,6 +84,7 @@ static void guest_strcpy(char* dst, uint32_t gaddr, size_t cap)
+ /* Defined in runtime/syscalls/sys_fs.c -- shared by all three path
+  * translators. (extern "C" is ill-formed at block scope.) */
+ extern "C" void ps3_vfs_ps3game_fallback(char* path, size_t cap);
++extern "C" void ps3_dev_flash_path(char* out, size_t cap, const char* roots, const char* rel);
+ 
+ /* Translate a guest path to a host path under ppu_vfs_root. Known PS3 mount
+  * prefixes are stripped; the rest is appended to the root. */
+@@ -111,7 +112,7 @@ static void host_path(char* out, size_t cap, const char* guest)
      if (strncmp(guest, "/dev_flash/", 11) == 0) {
          const char* fw = getenv("PS3_DEV_FLASH");
          if (!fw || !*fw) fw = "D:/recomp/tools/rpcs3/dev_flash";
 -        snprintf(out, cap, "%s/%s", fw, guest + 11);
-+        /* PS3_DEV_FLASH may list several roots (':' on POSIX, ';' on Windows): the first one that
-+         * holds the file wins, so a directory of stand-ins can shadow firmware files. The first root
-+         * is used when none has it. */
-+#ifdef _WIN32
-+        const char sep = ';';
-+#else
-+        const char sep = ':';
-+#endif
-+        const char* root = fw;
-+        for (const char* r = fw; r && *r; ) {
-+            const char* e = strchr(r, sep);
-+            size_t n = e ? (size_t)(e - r) : strlen(r);
-+            snprintf(out, cap, "%.*s/%s", (int)n, r, guest + 11);
-+            struct stat _st;
-+            if (stat(out, &_st) == 0) { root = NULL; break; }
-+            r = e ? e + 1 : NULL;
-+        }
-+        if (root) {
-+            const char* e = strchr(root, sep);
-+            snprintf(out, cap, "%.*s/%s", e ? (int)(e - root) : (int)strlen(root), root, guest + 11);
-+        }
++        ps3_dev_flash_path(out, cap, fw, guest + 11);
          for (char* p = out; *p; p++) if (*p == '\\') *p = '/';
          return;
      }
 diff --git a/runtime/ppu/ppu_hle.cpp b/runtime/ppu/ppu_hle.cpp
-index acbaf12..4da7620 100644
+index acbaf12..0321296 100644
 --- a/runtime/ppu/ppu_hle.cpp
 +++ b/runtime/ppu/ppu_hle.cpp
-@@ -276,7 +276,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
+@@ -17,6 +17,7 @@
+  * Compiled as C++ (matches the lifted output). Game-agnostic.
+  */
+ #include "ppu_recomp.h"   /* ppu_context */
++#include "ps3emu/log_first.h"
+ #include "ps3emu/nid.h"   /* ps3_nid_table, ps3_nid_entry */
+ #include "ps3emu/milestone.h" /* ps3_msf -- boot milestone log */
+ #include <stdlib.h>       /* getenv */
+@@ -276,7 +277,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
                        s_ha = e ? (long)strtoul(e, 0, 16) : 0; }
        if (s_ha && nid == (uint32_t)s_ha) {
          static int _n = 0;
 -        if (_n++ < 6)
-+        if ((_n < 6 && ++_n))
++        if (PS3_LOG_FIRST(_n, 6))
            fprintf(stderr, "[hle-args] nid=0x%08X r3=0x%08X r4=0x%08X r5=0x%08X r6=0x%08X "
                            "r7=0x%08X r8=0x%08X r9=0x%08X r10=0x%08X lr=0x%08X\n",
                    nid, (uint32_t)ctx->gpr[3], (uint32_t)ctx->gpr[4], (uint32_t)ctx->gpr[5],
-@@ -368,7 +368,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
+@@ -368,7 +369,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
                              }
                          }
                          static int _n = 0;
 -                        if (_n++ < 8)
-+                        if ((_n < 8 && ++_n))
++                        if (PS3_LOG_FIRST(_n, 8))
                              fprintf(stderr, "[FORCE-HLE] nid=0x%08X: bypassing libsre, using HLE\n", nid);
                          opd = 0;   /* fall through to the HLE handler below */
                          break;
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index bf75dc8..fb43e8e 100644
+index bf75dc8..d8c7b3b 100644
 --- a/runtime/ppu/ppu_loader.cpp
 +++ b/runtime/ppu/ppu_loader.cpp
-@@ -1771,7 +1771,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
+@@ -21,6 +21,7 @@
+ /* Hoisted: code below was added above the original include block, so these
+  * have to be visible from here rather than 160 lines further down. */
+ #include <stdint.h>
++#include "ps3emu/log_first.h"
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -1771,7 +1772,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
        if (s_wv && v == s_wv && a >= s_wvlo && a < s_wvhi &&
            (!s_wvg || GetFileAttributesA(s_wvg) != INVALID_FILE_ATTRIBUTES)) {
            static int _n = 0;
 -          if (_n++ < 24) {
-+          if ((_n < 24 && ++_n)) {
++          if (PS3_LOG_FIRST(_n, 24)) {
                fprintf(stderr, "[wv] 0x%08X <- 0x%X (w%d) guest-fn=0x%08X\n",
                        a, v, width, ppu_prof_resolve_host(ra));
                extern PPU_THREAD_LOCAL ppu_context* g_active_ctx;
-@@ -1858,7 +1858,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
+@@ -1858,7 +1859,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
      if (!b) return;
      if (a >= b + 0x40 && a < b + 0xC0) {
          static int _n = 0;
 -        if (_n++ < 48)
-+        if ((_n < 48 && ++_n))
++        if (PS3_LOG_FIRST(_n, 48))
              fprintf(stderr, "[sync-write] +0x%02X <- 0x%X (w%d) guest-fn=0x%08X\n",
                      a - b, v, width, ppu_prof_resolve_host(ra));
      }
-@@ -2671,7 +2671,7 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
+@@ -2671,7 +2672,7 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
          ppu_fn fn2 = ppu_lookup(toc_reg);
          if (fn2) {
              static int _n = 0;
 -            if (_n++ < 8) fprintf(stderr, "[ppu] OPD-swap fixup: ctr=0x%08X not a func, using r2=0x%08X\n", addr, toc_reg);
-+            if ((_n < 8 && ++_n)) fprintf(stderr, "[ppu] OPD-swap fixup: ctr=0x%08X not a func, using r2=0x%08X\n", addr, toc_reg);
++            if (PS3_LOG_FIRST(_n, 8)) fprintf(stderr, "[ppu] OPD-swap fixup: ctr=0x%08X not a func, using r2=0x%08X\n", addr, toc_reg);
              ctx->gpr[2] = addr;        /* callee TOC = the (TOC) value from the code slot */
              addr = toc_reg; ctx->ctr = toc_reg;
              fn = fn2;
+diff --git a/runtime/syscalls/sys_fs.c b/runtime/syscalls/sys_fs.c
+index 489f8a5..9fcd29a 100644
+--- a/runtime/syscalls/sys_fs.c
++++ b/runtime/syscalls/sys_fs.c
+@@ -76,6 +76,29 @@ static void fs_normalize_sep(char* p) {
+ #endif
+ }
+ 
++/* The host path of `rel`, a path under /dev_flash (without the mount prefix), for `roots`: PS3_DEV_FLASH, one
++ * directory or a list of them (':' on POSIX, ';' on Windows). The first root that holds the file wins, so a
++ * directory of stand-ins can shadow firmware files; the first root is used when none has it. The parts are
++ * joined with '/', the caller converts the separators to its own convention. Shared by the sys_fs and the
++ * ppu_fs (cellFs) translators, which have to agree. */
++void ps3_dev_flash_path(char* out, size_t cap, const char* roots, const char* rel)
++{
++#ifdef _WIN32
++    const char sep = ';';
++#else
++    const char sep = ':';
++#endif
++    const char* e = strchr(roots, sep);
++    const size_t first_n = e ? (size_t)(e - roots) : strlen(roots);
++    for (const char* r = roots; r && *r; r = e ? e + 1 : NULL) {
++        e = strchr(r, sep);
++        snprintf(out, cap, "%.*s/%s", e ? (int)(e - r) : (int)strlen(r), r, rel);
++        struct stat st;
++        if (stat(out, &st) == 0) return;
++    }
++    snprintf(out, cap, "%.*s/%s", (int)first_n, roots, rel);
++}
++
+ /* Extracted game trees come in two shapes: the disc layout (<root>/PS3_GAME/
+  * USRDIR/...) and a flattened one (<root>/USRDIR/...). cellGame hands the title
+  * disc-style paths either way -- cellGameContentPermit reports
+@@ -153,7 +176,7 @@ void sys_fs_translate_path(const char* ps3_path, char* host_path, int host_path_
+         static const char* fw = NULL; static int fw_init = 0;
+         if (!fw_init) { fw = getenv("PS3_DEV_FLASH"); fw_init = 1; }
+         if (fw && *fw && strncmp(ps3_path, "/dev_flash/", 11) == 0) {
+-            snprintf(host_path, (size_t)host_path_size, "%s/%s", fw, ps3_path + 11);
++            ps3_dev_flash_path(host_path, (size_t)host_path_size, fw, ps3_path + 11);
+             fs_normalize_sep(host_path);
+             return;
+         }

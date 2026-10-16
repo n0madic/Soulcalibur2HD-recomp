@@ -37,10 +37,10 @@ index 1b6518b..0d854fd 100644
  # Runtime core (syscalls, PPU, SPU, memory)
  file(GLOB_RECURSE RUNTIME_SOURCES
 diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
-index 65630cb..5a0364c 100644
+index 93d507f..1a74615 100644
 --- a/libs/spurs/cellSpurs.c
 +++ b/libs/spurs/cellSpurs.c
-@@ -2536,13 +2536,8 @@ static int jg_wait(u32 ea)
+@@ -2537,13 +2537,8 @@ static int jg_wait(u32 ea)
   * this queue, and would only notify again after the event arrives -- so
   * signalling at walker exit deadlocks both sides. Signal when the WORK
   * completes: at END, and on reaching a guard with jobs run this lap. */
@@ -74,10 +74,10 @@ index 252c3e8..b212982 100644
  static pthread_mutex_t s_completion_lock = PTHREAD_MUTEX_INITIALIZER;
  #define COMPLETION_LOCK() pthread_mutex_lock(&s_completion_lock)
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index 6b2ec57..d1bf962 100644
+index a4bbb99..174a284 100644
 --- a/runtime/ppu/ppu_loader.cpp
 +++ b/runtime/ppu/ppu_loader.cpp
-@@ -623,7 +623,12 @@ static uint32_t samp_stack_guest(HANDLE h, const CONTEXT* c)
+@@ -624,7 +624,12 @@ static uint32_t samp_stack_guest(HANDLE h, const CONTEXT* c)
      const uintptr_t* sp = (const uintptr_t*)c->Rsp;
      for (int i = 0; i < 512; i++) {          /* 4 KB of stack */
          uintptr_t v;
@@ -90,7 +90,7 @@ index 6b2ec57..d1bf962 100644
          uint32_t g = samp_lookup(v);
          if (g) return g;
      }
-@@ -697,7 +702,7 @@ static DWORD WINAPI samp_thread(LPVOID p)
+@@ -698,7 +703,7 @@ static DWORD WINAPI samp_thread(LPVOID p)
   * Writing the word leaves memory self-consistent: lwarx, the CAS and the
   * polling reader all see the same thing, so the guest behaves as it would if
   * whatever should have cleared the counter had done so. */
@@ -99,7 +99,7 @@ index 6b2ec57..d1bf962 100644
  static DWORD WINAPI poke_thread(LPVOID p)
  {
      const uint32_t ea  = (uint32_t)(uintptr_t)p;
-@@ -1937,6 +1942,9 @@ void flow_lookup_alloc(unsigned int p) {
+@@ -1938,6 +1943,9 @@ void flow_lookup_alloc(unsigned int p) {
  
  /* Cross-fragment trampoline pointer (matches the lifted header's TLS decl). */
  extern "C" PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*) = nullptr;
@@ -110,10 +110,10 @@ index 6b2ec57..d1bf962 100644
  /* Per-thread active guest context, for the crash handler to report the guest PC
   * (ctx->pc, updated by lifted code at block boundaries) of a host AV. */
 diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
-index ab270ce..54f4203 100644
+index 88f02e0..0238894 100644
 --- a/runtime/spu/spu_context.h
 +++ b/runtime/spu/spu_context.h
-@@ -768,6 +768,17 @@ static inline int spu_channel_has_data(const spu_channel* ch)
+@@ -769,6 +769,17 @@ static inline int spu_channel_has_data(const spu_channel* ch)
   * function in the active image and runs it. Referenced by SPU_RET/SPU_DRAIN. */
  void spu_indirect_branch(spu_context* ctx);
  
@@ -131,7 +131,7 @@ index ab270ce..54f4203 100644
  /* Pending cross-function transfer target; NULL when none. Thread-local: each
   * spu_context is pinned to one host thread for its lifetime. */
  extern SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*);
-@@ -777,6 +788,7 @@ extern SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*);
+@@ -778,6 +789,7 @@ extern SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*);
   * trampoline hop, which is the one that actually precedes a bad branch. */
  extern SPU_THREAD_LOCAL uint32_t g_spu_pch[8];
  extern SPU_THREAD_LOCAL unsigned g_spu_pch_n;
@@ -140,10 +140,10 @@ index ab270ce..54f4203 100644
  /* Central per-transfer hooks (stubbed in spu_drain.c until their milestones). */
  void yz_lockstep_tick(spu_context* ctx);             /* round-robin token gate */
 diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
-index 1cd5cef..f178801 100644
+index 62ec5cd..593c2ed 100644
 --- a/runtime/spu/spu_drain.c
 +++ b/runtime/spu/spu_drain.c
-@@ -21,6 +21,11 @@ SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*) = 0;
+@@ -22,6 +22,11 @@ SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*) = 0;
  SPU_THREAD_LOCAL uint32_t g_spu_pch[8];
  SPU_THREAD_LOCAL unsigned g_spu_pch_n;
  
@@ -156,10 +156,10 @@ index 1cd5cef..f178801 100644
  
  /* SPURS task-launch interception at a trampoline hop (milestone: SPURS kernel).
 diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
-index 09a8d6b..a9ecc68 100644
+index 18bd52c..e66cb88 100644
 --- a/runtime/spu/spurs_job.c
 +++ b/runtime/spu/spurs_job.c
-@@ -135,16 +135,11 @@ const uint8_t* spurs_job_ls_for_handle(uint32_t handle)
+@@ -136,16 +136,11 @@ const uint8_t* spurs_job_ls_for_handle(uint32_t handle)
   * flight. As plain globals these were clobbered between a job finishing and its
   * own completion being pushed, so a query could be answered with an unrelated
   * job's mailbox. Per-thread keeps each job paired with its own answer. */
@@ -180,13 +180,13 @@ index 09a8d6b..a9ecc68 100644
  int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
                        uint32_t job_ea, uint32_t job_desc_size)
 diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
-index 042f131..6f47fff 100644
+index d84cfd3..a9ba1a3 100644
 --- a/runtime/syscalls/sys_ppu_thread.c
 +++ b/runtime/syscalls/sys_ppu_thread.c
-@@ -3,19 +3,15 @@
-  */
+@@ -4,19 +4,15 @@
  
  #include <setjmp.h>
+ #include "ps3emu/log_first.h"
 +#include "../ppu/ppu_tls.h"   /* PPU_THREAD_LOCAL, for the thread-exit jump buffer below */
  
  /* sys_ppu_thread_exit never returns on hardware. Returning CELL_OK to the
