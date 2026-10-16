@@ -1,0 +1,39 @@
+Metal fullscreen: start in fullscreen on request, Ctrl+Cmd+F toggles it.
+
+- PS3RECOMP_FULLSCREEN=1 (the launcher's --fullscreen) puts the window into native macOS fullscreen right after
+  it is shown. The picture keeps its aspect ratio there as in a resized window.
+- The app menu gets "Toggle Full Screen" on Ctrl+Cmd+F (the window is a fullscreen-primary window, so the green
+  button does the same). The Vulkan backend reads the same variable and has F11 / Alt+Enter (0013).
+
+---
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+index 9975f41..fa5337c 100644
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -496,6 +496,11 @@ static int create_window_impl(const char* title)
+         NSString* quitTitle = [@"Quit " stringByAppendingString:[NSString stringWithUTF8String:(title ? title : "ps3recomp")]];
+         NSMenuItem* quit = [[NSMenuItem alloc] initWithTitle:quitTitle action:@selector(quit:) keyEquivalent:@"q"];
+         [quit setTarget:s_quit_target];
++        /* Ctrl+Cmd+F, as in other apps; no target, so it goes to the key window. */
++        NSMenuItem* full = [[NSMenuItem alloc] initWithTitle:@"Toggle Full Screen"
++                                                      action:@selector(toggleFullScreen:) keyEquivalent:@"f"];
++        [full setKeyEquivalentModifierMask:(NSEventModifierFlagControl | NSEventModifierFlagCommand)];
++        [appMenu addItem:full];
+         [appMenu addItem:quit];
+         [appItem setSubmenu:appMenu];
+         [NSApp setMainMenu:bar];
+@@ -530,8 +535,14 @@ static int create_window_impl(const char* title)
+     [view setWantsLayer:YES];
+     [view setLayer:s_layer];
+ 
++    [s_window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
+     [s_window makeKeyAndOrderFront:nil];
+     [NSApp activateIgnoringOtherApps:YES];
++    /* PS3RECOMP_FULLSCREEN=1 (--fullscreen), the same for every backend: start in fullscreen; the picture is letterboxed as in a window. */
++    {
++        const char* fs = getenv("PS3RECOMP_FULLSCREEN");
++        if (fs && fs[0] && fs[0] != '0') [s_window toggleFullScreen:nil];
++    }
+     return 0;
+ }
+ 

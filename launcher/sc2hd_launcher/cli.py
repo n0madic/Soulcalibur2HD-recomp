@@ -118,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--no-fxaa", dest="fxaa", action="store_false", help="FXAA off")
     g.add_argument("--af", type=int, metavar="N", help="anisotropic filtering 1 (off) .. 16 (default)")
     g.add_argument("--window", metavar="WxH", help="initial window size in points (default 1280x720)")
+    g.add_argument("--fullscreen", action="store_true", help="start in fullscreen (F11 / Alt+Enter, macOS: Ctrl+Cmd+F)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname).1s %(name)s: %(message)s")
 
@@ -172,4 +173,6 @@ def main(argv: list[str] | None = None) -> int:
         env["PS3RECOMP_METAL_AF"] = str(args.af)
     if args.window:
         env["PS3RECOMP_METAL_WINDOW"] = args.window
+    if args.fullscreen:
+        env["PS3RECOMP_FULLSCREEN"] = "1"
     return runner.start(exe, module, files, work / "run", env, sys.executable)

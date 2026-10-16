@@ -61,7 +61,7 @@ Later runs go straight to step 4. Nothing is redone unless the inputs change.
 ## Options
 
 ```
-./sc2hd.py [--fxaa | --no-fxaa] [--af N] [--window WxH]
+./sc2hd.py [--fxaa | --no-fxaa] [--af N] [--window WxH] [--fullscreen]
 ```
 
 | Option | Meaning |
@@ -69,6 +69,7 @@ Later runs go straight to step 4. Nothing is redone unless the inputs change.
 | `--fxaa`, `--no-fxaa` | FXAA anti-aliasing of the finished picture (default on). It also softens the HUD a little (macOS) |
 | `--af N` | anisotropic texture filtering 1 (off) … 16 (default 16) (macOS) |
 | `--window WxH` | initial window size in points, e.g. `1600x900` (default 1280x720). The window can be resized; the 16:9 picture keeps its shape and the rest is black (macOS) |
+| `--fullscreen` | start in fullscreen. In the game F11 or Alt+Enter (macOS: Ctrl+Cmd+F or the green button) switches between fullscreen and a window; the window can be resized and maximized, the picture keeps its 16:9 shape |
 | `--data DIR` | where everything derived from the game lives (default `./data` in the directory you start from, or `SC2HD_HOME`) |
 | `--compiler auto\|system\|zig` | which compiler builds the game library (default: a suitable system clang, else zig) |
 | `build` / `run` | only build / only run |
