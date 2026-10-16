@@ -86,7 +86,10 @@ derived from the game, so it must not be shared.
   frame is rendered offscreen and blitted into an SDL2 window's swapchain. SDL needs the X11 (or Wayland) headers at build time,
   or it ends up with no video driver. The window is not given an icon yet. No `DISPLAY`/`WAYLAND_DISPLAY`, `SC2HD_HEADLESS` or a
   failed Vulkan init select the null backend instead. Checked under Xvfb with Mesa llvmpipe: the intro movie and the menus draw
-  correctly (`PAD_AUTOPRESS=1` gets past the intro), and `Esc` closes the window. The toolkit's keyboard fallback was Windows and
+  correctly (`PAD_AUTOPRESS=1` gets past the intro), and `Esc` closes the window. Also run in WSL2 on Windows 11 (Ubuntu 24.04,
+  WSLg's X11, sound through its PulseAudio): Ubuntu's Mesa has no Vulkan driver for the GPU there, so it is llvmpipe again;
+  the intro movie runs at 60 frames a second and the attract-mode fights draw correctly at about 10. The Vulkan backend and
+  draw engine fixes made for Windows (`patches/0032`-`0038`) are shared code and apply here too. The toolkit's keyboard fallback was Windows and
   macOS only; `patches/0029` adds an SDL one (`SDL_GetKeyboardState`, the same keys, while the window has the focus), checked with
   `xdotool` under Xvfb: Return leaves the intro, arrows and Z work in the menus.
 - Icon: the host carries the neutral `assets/icon/sc2hd.png` (`scripts/make_icon.py` turns it into the Windows icon resource

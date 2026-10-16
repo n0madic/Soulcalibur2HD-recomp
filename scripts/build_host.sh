@@ -9,7 +9,7 @@
 # Needs git, cmake, ninja, python3 (3.10+) and a C/C++ compiler (macOS: Xcode command line tools; Windows target: a
 # MinGW-w64 clang -- llvm-mingw, or on Windows WinLibs' LLVM build -- or the x86_64-w64-mingw32 g++ with the posix
 # thread model, see scripts/mingw-w64.cmake; Linux: the Vulkan and X11 headers, libvulkan-dev and libx11-dev on
-# Debian, for the window). Layout (generated):
+# Debian, for the window, and the PulseAudio or ALSA ones, libpulse-dev / libasound2-dev, for sound). Layout (generated):
 #   build/ps3recomp/   pinned clone of github.com/sp00nznet/ps3recomp, with patches/ applied
 #   build/deps/        pinned sources and the static install prefix of SDL2, glslang, SPIRV-Tools, SPIRV-Cross
 #                      (prefix/), and for Windows of SDL2, glslang and the Vulkan headers (prefix-windows/): the
@@ -105,6 +105,10 @@ if [[ "$TARGET" == native && "$(uname -s)" == Linux ]]; then
   for h in vulkan/vulkan.h X11/Xlib.h; do
     have_header "$h" || { echo "missing header $h (Debian/Ubuntu: apt install libvulkan-dev libx11-dev)" >&2; exit 1; }
   done
+  # Likewise its audio drivers: without these headers SDL has only the dummy one and the game is silent.
+  if [[ ! -f "$DEPS/sdl2.done" ]] && ! have_header pulse/pulseaudio.h && ! have_header alsa/asoundlib.h; then
+    echo "warning: no PulseAudio or ALSA headers, the host will have no sound (Debian/Ubuntu: apt install libpulse-dev libasound2-dev)" >&2
+  fi
 fi
 
 if [[ "$TARGET" == native ]]; then

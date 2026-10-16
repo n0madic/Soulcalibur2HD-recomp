@@ -132,6 +132,11 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
     audio gap it made the late audio blocks worse (17-20%).
   - `main.cpp`: a guest frame is presented (and its flip completed) at most once per 60 Hz vblank, as on a PS3 driving a 60 Hz
     output. On a 120 Hz display the FIFO swapchain otherwise let the game flip about 110 times a second.
+  - Only 0030 (D3D12), 0031 (building the Vulkan backend for Windows), 0035 (the WASAPI mix thread) and the 1 ms frame-loop
+    sleep are Windows-only. 0032-0034 and 0036-0038 change the Vulkan backend, the draw engine and NV3089, which Linux
+    shares (macOS shares the draw engine and NV3089), and the vblank cap applies everywhere but macOS. On Linux they fixed
+    the same magenta picture after the intro: the first commit, run in WSLg on llvmpipe, showed only magenta in the attract
+    demos at 0-8 frames a second; with the patches the demos draw correctly at about 10 (still the CPU rasteriser).
 - `patches/0015`: the `if (_n++ < N)` log caps used signed counters that wrapped negative after 2^31 calls and then printed on every call (millions of `[spu] drain-resume` lines in battle); they now saturate.
 - MP3 without firmware: MultiStream loads Sony's decoder `flashMP3.pic` into local store and calls one function of it per
   frame. `src/mp3_hle.c` answers that call on the host (decoder core: `src/third_party/dr_mp3_core.h`, dr_mp3/minimp3,
@@ -153,5 +158,5 @@ Open:
 - Input was only driven through `PAD_SCRIPT`/`PAD_FILE`; the keyboard fallbacks (macOS, Linux; Linux only with synthetic key events) and real controllers are untested.
 - Rare FIFO decode failures (`FIFO JUMP to unmapped IO ... drain stops`, 0-3 per minute, most often while a battle loads) lose that frame's commands.
 - `[mfc] REJECTED malformed transfer` from SPU image 2 appears now and then.
-- Windows draws through the Vulkan backend (fights at the 60 Hz cap on an Arc 140V once the stage's shaders are built), Linux draws through the toolkit's Vulkan backend in an SDL2 window (null backend without a display; only seen on llvmpipe); `rsx_live_draw.c` (D3D12) lacks the supersample resolve of `patches/0006`.
+- Windows draws through the Vulkan backend (fights at the 60 Hz cap on an Arc 140V once the stage's shaders are built), Linux draws through the toolkit's Vulkan backend in an SDL2 window (null backend without a display; only seen on llvmpipe, under Xvfb and in WSLg, never on a GPU); `rsx_live_draw.c` (D3D12) lacks the supersample resolve of `patches/0006`.
 - "chain gives up" after 20 s is harmless (job chains starting with a GUARD the game has not notified yet).

@@ -9,8 +9,8 @@ release zip. On first start the launcher installs *your* copy of the game, trans
 computer. The translated code never leaves it.
 
 > Status: **works on Apple Silicon Macs (Metal)**, and on Windows (Vulkan; tested on an Intel Core Ultra 7 258V / Arc 140V
-> laptop, see [Known issues](#known-issues)). The host and the game module also build for Linux (a Vulkan window, tried only on a
-> software rasteriser).
+> laptop, see [Known issues](#known-issues)). The host and the game module also build and run on Linux (a Vulkan window, tried
+> only on a software rasteriser, including under WSL2).
 
 ## What you need
 
@@ -105,8 +105,9 @@ derived from the game.
 - MP3 music is decoded on the host; about 9 % of the frames differ slightly from the console's decoder at loud transients.
 - Rare dropped frames from display-list decoding failures, mostly while a battle loads.
 - Linux: the picture is shown in an SDL2 window through the toolkit's Vulkan backend (X11 or Wayland, `Esc` or closing the window quits). It has
-  only run on Mesa's software rasteriser (llvmpipe) under Xvfb, never on a real GPU; there is no FXAA, no anisotropic filtering and the
-  window is a fixed 1280x720. With no `DISPLAY` or `WAYLAND_DISPLAY` (or with
+  only run on Mesa's software rasteriser (llvmpipe), under Xvfb and in WSL2's WSLg, never on a real GPU: the picture is right, but a
+  fight runs at about 10 frames a second there (in WSL2, Ubuntu's Mesa has no Vulkan driver for the GPU, so llvmpipe is what runs). There
+  is no FXAA, no anisotropic filtering and the window is a fixed 1280x720. With no `DISPLAY` or `WAYLAND_DISPLAY` (or with
   `SC2HD_HEADLESS=1`), and when there is no Vulkan device, the host runs on the toolkit's null backend instead, with no window.
 - Windows: the game is drawn through the Vulkan backend in an SDL window (D3D12 is only the fallback for a machine with no
   Vulkan driver, `SC2HD_D3D12=1`; it draws nothing after the intro). Menus and movies run at 60 frames a second, and so does a
@@ -122,7 +123,8 @@ derived from the game.
 - [docs/licensing.md](docs/licensing.md): the licenses of everything involved.
 
 To build the release yourself you need git, cmake, ninja, Python 3.10+ and a C/C++ compiler (on Linux also the Vulkan and X11
-headers: `apt install libvulkan-dev libx11-dev`, and at run time a Vulkan driver such as `mesa-vulkan-drivers`):
+headers, and the PulseAudio or ALSA headers for sound: `apt install libvulkan-dev libx11-dev libpulse-dev libasound2-dev`, and at
+run time a Vulkan driver such as `mesa-vulkan-drivers`):
 
 ```sh
 scripts/build_host.sh     # clones the pinned toolkit, applies patches/, builds the static dependencies and the host
