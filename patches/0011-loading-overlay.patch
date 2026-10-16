@@ -1,0 +1,313 @@
+Boot "Loading..." overlay: the window is black for the first seconds of a title.
+
+- PS3RECOMP_LOADING_OVERLAY=1 makes the draw engine report rsx_draw_engine_loading_overlay() until the first presented
+  frame with a lit pixel in it (three pixels are read back per frame meanwhile), or 3600 frames.
+- rsx_loading_overlay.h renders the text on the CPU (5x7 bitmap font); the Metal backend draws it with its display blit,
+  the Vulkan backend copies it over the swapchain image after the blit. The guest's surfaces are not touched.
+- The D3D12 backend does not run the draw engine and has no overlay.
+
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+index bcf7114..33ee2ee 100644
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -172,6 +172,7 @@ static struct {
+     u64 texture_use_serial;
+     u32 guest_draws;
+     u32 last_guest_draws;
++    int loading;                    /* ENG_LOADING_*: the boot overlay */
+     u32 last_present_surface;
+     u32 last_flip_buffer;
+     u64 write_serial;       /* orders colour and depth writes to one address */
+@@ -2675,11 +2676,44 @@ static u32 eng_present_surface(u32 buffer_id)
+     return eng_current_surface();
+ }
+ 
++/* The "Loading..." overlay (PS3RECOMP_LOADING_OVERLAY=1): a title spends its first seconds clearing and fading
++ * in black while it loads, and the window shows nothing meanwhile. The backends draw the text into their window
++ * present while rsx_draw_engine_loading_overlay() is true. It ends with the first presented frame that has a lit
++ * pixel in it, or after ENG_LOADING_MAX_FRAMES frames: a title that never shows a picture keeps no overlay forever. */
++#define ENG_LOADING_OFF        0
++#define ENG_LOADING_SHOW       1
++#define ENG_LOADING_DONE       2
++#define ENG_LOADING_MAX_FRAMES 3600
++#define ENG_LOADING_LIT        8      /* a channel above this is picture, not black */
++
++/* Is there picture on this surface? Three pixels, flushed first so they hold what the guest has drawn so far. */
++static int eng_picture_started(const eng_surface* s)
++{
++    if (s->fmt != RSX_BE_FMT_R8G8B8A8 || !s->w || !s->h || !g.be->readback || !g.be->submit_and_wait) return 1;
++    g.be->submit_and_wait(g.be->user, RSX_BE_FLUSH_GUEST_REFERENCE);
++    const u32 xs[3] = { s->w / 2u, s->w / 8u, s->w - 1u - s->w / 8u };
++    const u32 ys[3] = { s->h / 2u, s->h / 8u, s->h - 1u - s->h / 8u };
++    for (u32 i = 0; i < 3; i++) {
++        u8 px[4] = { 0, 0, 0, 0 };
++        g.be->readback(g.be->user, s->handle, xs[i], ys[i], 1, 1, px, 4);
++        if (px[0] > ENG_LOADING_LIT || px[1] > ENG_LOADING_LIT || px[2] > ENG_LOADING_LIT) return 1;
++    }
++    return 0;
++}
++
++int rsx_draw_engine_loading_overlay(void)
++{
++    return g.loading == ENG_LOADING_SHOW;
++}
++
+ static void eng_present(u32 buffer_id)
+ {
+     if (!g.ready) return;
+     const u32 target = eng_present_surface(buffer_id);
+     if (target == ENG_INVALID) return;
++    if (g.loading == ENG_LOADING_SHOW &&
++        (g.frames >= ENG_LOADING_MAX_FRAMES || eng_picture_started(&g.surfaces[target])))
++        g.loading = ENG_LOADING_DONE;
+     if (getenv("PS3RECOMP_METAL_FRAME_DUMP") && g.frames % 120 == 0) {
+         u32 current = eng_current_surface();
+         fprintf(stderr, "[rsx capture] frame=%u buffer=%u selected=%u current=%u draws=%u surfaces=%u\n",
+@@ -2757,6 +2791,10 @@ int rsx_draw_engine_init(u32 width, u32 height)
+     sink.flip             = sink_flip;
+     rsx_dispatch_init(&g.rsx, &sink);
+     g.ready = 1;
++    {
++        const char* e = getenv("PS3RECOMP_LOADING_OVERLAY");
++        g.loading = (e && *e && *e != '0') ? ENG_LOADING_SHOW : ENG_LOADING_OFF;
++    }
+     /* Display buffers the title registered before the backend came up. */
+     cellGcm_replay_display_buffers_to_engine();
+     fprintf(stderr, "[rsx engine] register-file draw engine up (%ux%u)\n",
+diff --git a/libs/video/rsx_draw_engine.h b/libs/video/rsx_draw_engine.h
+index f858a8f..4de1ccb 100644
+--- a/libs/video/rsx_draw_engine.h
++++ b/libs/video/rsx_draw_engine.h
+@@ -297,6 +297,10 @@ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32
+  * memory first, so the transfer sees (or overwrites) the resolved pixels. */
+ void rsx_draw_engine_guest_access(u32 location, u32 offset, u32 bytes);
+ 
++/* True while a window backend should draw its "Loading..." text over the frame it presents (rsx_loading_overlay.h):
++ * PS3RECOMP_LOADING_OVERLAY=1, until the title's first picture. */
++int  rsx_draw_engine_loading_overlay(void);
++
+ /* --- test hooks ---------------------------------------------------------- */
+ 
+ /* Draws that ran the guest's OWN programs in the last presented frame. A draw
+diff --git a/libs/video/rsx_loading_overlay.h b/libs/video/rsx_loading_overlay.h
+new file mode 100644
+index 0000000..40e8d6c
+--- /dev/null
++++ b/libs/video/rsx_loading_overlay.h
+@@ -0,0 +1,73 @@
++/* The "Loading..." text a window backend puts over the picture while the title boots.
++ *
++ * The draw engine decides when it is shown (rsx_draw_engine_loading_overlay); a backend draws it in its window
++ * present, so the guest's own surfaces are never touched. The text is rendered once on the CPU, white on black, in a
++ * 5x7 bitmap font, and handed to the GPU as a small RGBA8 image. */
++#ifndef PS3RECOMP_RSX_LOADING_OVERLAY_H
++#define PS3RECOMP_RSX_LOADING_OVERLAY_H
++
++#include <stddef.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define RSX_LOADING_TEXT_GLYPHS 10u
++#define RSX_LOADING_GLYPH_W     5u
++#define RSX_LOADING_GLYPH_ROWS  8u      /* 7 of cap height, one for the descender of the g */
++#define RSX_LOADING_ADVANCE     6u      /* a glyph and the gap after it */
++#define RSX_LOADING_COLS        (RSX_LOADING_TEXT_GLYPHS * RSX_LOADING_ADVANCE - 1u)
++
++/* The font: "Loading...". Each row is a 5-bit mask, the leftmost pixel in bit 4. */
++static const unsigned char rsx_loading_font[][RSX_LOADING_GLYPH_ROWS] = {
++    { 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F, 0x00 },   /* L */
++    { 0x00, 0x00, 0x0E, 0x11, 0x11, 0x11, 0x0E, 0x00 },   /* o */
++    { 0x00, 0x00, 0x0E, 0x01, 0x0F, 0x11, 0x0F, 0x00 },   /* a */
++    { 0x01, 0x01, 0x0F, 0x11, 0x11, 0x11, 0x0F, 0x00 },   /* d */
++    { 0x04, 0x00, 0x0C, 0x04, 0x04, 0x04, 0x0E, 0x00 },   /* i */
++    { 0x00, 0x00, 0x16, 0x19, 0x11, 0x11, 0x11, 0x00 },   /* n */
++    { 0x00, 0x00, 0x0F, 0x11, 0x11, 0x0F, 0x01, 0x0E },   /* g */
++    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00 },   /* . */
++};
++static const unsigned char rsx_loading_text[RSX_LOADING_TEXT_GLYPHS] = { 0, 1, 2, 3, 4, 5, 6, 7, 7, 7 };
++
++/* Pixels per font pixel for a target `target_h` pixels high: the text is about 2% of the height. */
++static inline unsigned rsx_loading_overlay_scale(unsigned target_h)
++{
++    unsigned s = target_h / 360u;
++    return s < 1u ? 1u : (s > 16u ? 16u : s);
++}
++static inline unsigned rsx_loading_overlay_width(unsigned scale)  { return RSX_LOADING_COLS * scale; }
++static inline unsigned rsx_loading_overlay_height(unsigned scale) { return RSX_LOADING_GLYPH_ROWS * scale; }
++
++/* Renders the text at `scale` into `rgba`, width * height * 4 bytes in R,G,B,A order, tightly packed. */
++static inline void rsx_loading_overlay_render(unsigned char* rgba, unsigned scale)
++{
++    const unsigned w = rsx_loading_overlay_width(scale), h = rsx_loading_overlay_height(scale);
++    for (unsigned y = 0; y < h; y++) {
++        const unsigned row = y / scale;
++        for (unsigned x = 0; x < w; x++) {
++            const unsigned col = x / scale;
++            const unsigned glyph = col / RSX_LOADING_ADVANCE, gx = col % RSX_LOADING_ADVANCE;
++            const int on = gx < RSX_LOADING_GLYPH_W &&
++                           ((rsx_loading_font[rsx_loading_text[glyph]][row] >> (RSX_LOADING_GLYPH_W - 1u - gx)) & 1u);
++            unsigned char* px = rgba + ((size_t)y * w + x) * 4u;
++            px[0] = px[1] = px[2] = on ? 0xFFu : 0x00u;
++            px[3] = 0xFFu;
++        }
++    }
++}
++
++/* Where the text goes on a target `dw` x `dh`: the bottom right corner, the margin of a few font pixels. */
++static inline void rsx_loading_overlay_place(unsigned dw, unsigned dh, unsigned scale, unsigned* x, unsigned* y)
++{
++    const unsigned w = rsx_loading_overlay_width(scale), h = rsx_loading_overlay_height(scale), m = 8u * scale;
++    *x = dw > w + m ? dw - w - m : 0u;
++    *y = dh > h + m ? dh - h - m : 0u;
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+index a2aeb6f..9975f41 100644
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -2087,6 +2087,7 @@ static void release_surfaces(void)
+  * --------------------------------------------------------------------------*/
+ 
+ #include "rsx_draw_engine.h"
++#include "rsx_loading_overlay.h"
+ 
+ #define ENG_MAX_OBJECTS  4096
+ #define ENG_MAX_PIPES    4096
+@@ -2180,6 +2181,8 @@ static void release_surfaces(void)
+ static id<MTLRenderPipelineState> s_eng_depth_pso;
+ static id<MTLSamplerState>        s_eng_point_sampler;
+ static id<MTLRenderPipelineState> s_eng_fxaa_pso;
++static id<MTLTexture>             s_loading_tex;      /* the boot "Loading..." text */
++static unsigned                   s_loading_scale;
+ static MTLPixelFormat             s_eng_fxaa_pso_fmt;
+ 
+ static NSString* const kEngHelperMSL = @
+@@ -2416,6 +2419,7 @@ static void eng_shutdown(void* user)
+     s_eng_depth_pso = nil;
+     s_eng_point_sampler = nil;
+     s_eng_fxaa_pso = nil;
++    s_loading_tex = nil;
+     s_eng_active = 0;
+ }
+ 
+@@ -3127,6 +3131,35 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+     return *pso;
+ }
+ 
++/* The boot "Loading..." text (rsx_loading_overlay.h), drawn over the bottom right corner of the display pass with
++ * the same full-screen blit, its viewport shrunk to the text. */
++static void eng_draw_loading(id<MTLRenderCommandEncoder> e, id<MTLTexture> dst)
++{
++    const unsigned dw = (unsigned)[dst width], dh = (unsigned)[dst height];
++    const unsigned scale = rsx_loading_overlay_scale(dh);
++    const unsigned w = rsx_loading_overlay_width(scale), h = rsx_loading_overlay_height(scale);
++    if (!s_loading_tex || s_loading_scale != scale) {
++        unsigned char* rgba = (unsigned char*)malloc((size_t)w * h * 4u);
++        if (!rgba) return;
++        rsx_loading_overlay_render(rgba, scale);
++        MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
++                                                                                       width:w height:h mipmapped:NO];
++        s_loading_tex = [s_dev newTextureWithDescriptor:td];
++        [s_loading_tex replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:rgba bytesPerRow:(NSUInteger)w * 4u];
++        s_loading_scale = scale;
++        free(rgba);
++    }
++    id<MTLRenderPipelineState> pso = eng_display_pso([dst pixelFormat], 0);
++    if (!s_loading_tex || !pso) return;
++    unsigned x, y;
++    rsx_loading_overlay_place(dw, dh, scale, &x, &y);
++    [e setViewport:(MTLViewport){(double)x, (double)y, (double)w, (double)h, 0.0, 1.0}];
++    [e setRenderPipelineState:pso];
++    [e setFragmentTexture:s_loading_tex atIndex:0];
++    [e setFragmentSamplerState:s_eng_point_sampler atIndex:0];
++    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
++}
++
+ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+                                 id<MTLTexture> dst)
+ {
+@@ -3150,6 +3183,7 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+     const int scaled = (vw != sw || vh != sh);
+     [e setFragmentSamplerState:((s_fxaa || scaled) ? s_default_sampler : s_eng_point_sampler) atIndex:0];
+     [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
++    if (rsx_draw_engine_loading_overlay()) eng_draw_loading(e, dst);
+     [e endEncoding];
+ }
+ 
+diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
+index b04adef..fa40f9d 100644
+--- a/libs/video/rsx_vulkan_backend.c
++++ b/libs/video/rsx_vulkan_backend.c
+@@ -52,6 +52,7 @@
+ #include "rsx_fp_decompiler.h"
+ #include "rsx_shader_spirv.h"
+ #include "rsx_draw_engine.h"
++#include "rsx_loading_overlay.h"
+ #include "vulkan/rsx_vk_fallback_vert.spv.h"
+ #include "vulkan/rsx_vk_fallback_frag.spv.h"
+ 
+@@ -1877,6 +1878,40 @@ static int vk_window_acquire(u32* idx)
+     return 0;
+ }
+ 
++/* The boot "Loading..." text (rsx_loading_overlay.h): copied over the bottom right corner of the swapchain image after
++ * the blit. It is white on black, so the bytes are the same whether the swapchain is BGRA or RGBA. Every window
++ * submission waits on its fence, so the buffer is idle whenever it is replaced. */
++static vk_buffer s_loading_buf;
++static unsigned  s_loading_scale;
++
++static void vk_window_loading(VkCommandBuffer cmd, u32 idx)
++{
++    const u32 dw = s_vk.sc_extent.width, dh = s_vk.sc_extent.height;
++    const unsigned scale = rsx_loading_overlay_scale(dh);
++    const unsigned w = rsx_loading_overlay_width(scale), h = rsx_loading_overlay_height(scale);
++    if (w > dw || h > dh) return;
++    if (s_loading_scale != scale) {
++        vk_destroy_buffer(&s_loading_buf);
++        s_loading_scale = scale;
++        if (vk_create_host_buffer(&s_loading_buf, (VkDeviceSize)w * h * 4u, VK_BUFFER_USAGE_TRANSFER_SRC_BIT) ||
++            !s_loading_buf.coherent)
++            vk_destroy_buffer(&s_loading_buf);
++        else
++            rsx_loading_overlay_render((unsigned char*)s_loading_buf.ptr, scale);
++    }
++    if (!s_loading_buf.buf) return;
++    unsigned x, y;
++    rsx_loading_overlay_place(dw, dh, scale, &x, &y);
++    VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
++                           .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
++    pvkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
++    VkBufferImageCopy region = {
++        .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
++        .imageOffset = { (int32_t)x, (int32_t)y, 0 }, .imageExtent = { w, h, 1 },
++    };
++    pvkCmdCopyBufferToImage(cmd, s_loading_buf.buf, s_vk.sc_images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
++}
++
+ /* Records the blit of the offscreen target into swapchain image `idx`, ending with the image ready to present. */
+ static void vk_window_blit(VkCommandBuffer cmd, u32 idx)
+ {
+@@ -1900,6 +1935,7 @@ static void vk_window_blit(VkCommandBuffer cmd, u32 idx)
+     pvkCmdBlitImage(cmd, s_vk.color.img, VK_IMAGE_LAYOUT_GENERAL,
+                     s_vk.sc_images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     1, &blit, VK_FILTER_LINEAR);
++    if (rsx_draw_engine_loading_overlay()) vk_window_loading(cmd, idx);
+     b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+     b.dstAccessMask = 0;
+     b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+@@ -3671,6 +3707,8 @@ void rsx_vulkan_backend_shutdown(void)
+         vk_destroy_image(&s_vk.color);
+         vk_destroy_buffer(&s_vk.vertices);
+         vk_destroy_buffer(&s_vk.readback);
++        vk_destroy_buffer(&s_loading_buf);
++        s_loading_scale = 0;
+         if (s_vk.fence) pvkDestroyFence(s_vk.device, s_vk.fence, NULL);
+         if (s_vk.pool)  pvkDestroyCommandPool(s_vk.device, s_vk.pool, NULL);   /* frees the pool's command buffers */
+         s_cmd_win = VK_NULL_HANDLE;      /* the window present's command buffer went with the pool: a re-init allocates anew */

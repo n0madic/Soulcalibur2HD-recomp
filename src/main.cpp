@@ -597,6 +597,10 @@ int main(int argc, char** argv)
      * its "save file is corrupted" dialog. */
     set_default_env("PS3_SAVEDATA_NODATA_OK", "2");
 
+    /* The game takes a few seconds to show its first picture, and the window is black until then: the draw engine
+     * has the window backend write "Loading..." over it until the first lit frame. */
+    set_default_env("PS3RECOMP_LOADING_OVERLAY", "1");
+
 #ifdef PS3RECOMP_RSX_VULKAN
     /* The Vulkan backend renders offscreen and shows the frame in an SDL window only on request, and draws with
      * the game's own shaders only on request: both are what a player wants. */
