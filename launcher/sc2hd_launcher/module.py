@@ -125,17 +125,22 @@ def build_module(inp: ModuleInputs, cc: Compiler, system: str, *, jobs: int = 8,
         objs = list(ex.map(compile_one, units))
 
     out = inp.out / module_name(system)
-    link = [*cc.cxx, *cc.target, "-shared", "-o", str(out)]
+    link = [*cc.cxx, *cc.target, "-shared", "-o", str(out), *map(str, objs)]
     if system == "darwin":
         link += ["-undefined", "dynamic_lookup"]
     elif system == "windows":
         # A DLL cannot leave symbols undefined: it links against the import library the host build writes. What the
         # host looks up (MODULE_EXPORTS) is exported through a .def file, since lld does not auto-export read-only data
-        # and there is no point in exporting the 11000 lifted functions.
+        # and there is no point in exporting the 11000 lifted functions. The import library goes after the objects:
+        # GNU ld only takes from an archive what the inputs before it left undefined.
         if implib is None or not implib.exists():
             raise ModuleBuildError(f"building the module for Windows needs the host's import library ({implib})")
+        if cc.kind == "system":
+            # A MinGW clang links with GNU ld and against the libstdc++/libgcc DLLs by default; zig links with lld and
+            # a static libc++. Match it, so the DLL needs nothing next to it.
+            link += ["-fuse-ld=lld", "-static"]
         link += [str(write_module_def(inp.out)), str(implib)]
     else:
         link += ["-Wl,-s"]
-    _run([*link, *map(str, objs)])
+    _run(link)
     return out
