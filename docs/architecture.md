@@ -71,13 +71,16 @@ derived from the game, so it must not be shared.
 
 ## Not done
 
-- Windows: `SC2HD_TARGET=windows scripts/build_host.sh` cross-compiles the host with MinGW-w64; it exports its runtime and writes
-  an import library (`sdk/libsc2hd_host.dll.a`) that the module DLL links against (the module exports only what the host looks
-  up; the DLL names `sc2hd_host.exe`, so the host must keep that file name). Both run under Wine on a Mac up to the end of the
-  intro; after it the game runs at about 1 frame/s with an audio engine that delivers 6 of every 14 blocks. The audio gaps are not
-  the renderer's (`DRAW_LIMIT=1` leaves them as they are) and not Rosetta's speed (the x86-64 Linux build under Rosetta mixes cleanly), so
-  it is either Wine or a Windows-specific wait in the runtime; it needs a run on real Windows. The D3D12 backend is otherwise
-  untried. `scripts/package.sh` packs it; that package has not been run on Windows.
+- Windows: `SC2HD_TARGET=windows scripts/build_host.sh` cross-compiles the host with MinGW-w64 (in Git Bash on Windows the
+  script builds it natively); it exports its runtime and writes an import library (`sdk/libsc2hd_host.dll.a`) that the module
+  DLL links against (the module exports only what the host looks up; the DLL names `sc2hd_host.exe`, so the host must keep that
+  file name). `scripts/mingw-w64.cmake` prefers a MinGW clang (llvm-mingw, WinLibs' LLVM build): GCC's MinGW port has only
+  emulated thread-local storage, a call per access, and the SPU threads live on their thread-locals. The game is drawn by the
+  Vulkan backend (`patches/0031`, SDL2 window, `vulkan-1.dll` loaded at run time, glslang for the guest programs; the
+  dependencies are built into `build/deps/prefix-windows`), with D3D12 as the fallback when there is no Vulkan driver
+  (`SC2HD_D3D12=1` forces it). The D3D12 backend draws only the toolkit's old live-draw path, which never resolves this game's
+  supersampled scene: a black picture after the intro. Run on a real Windows 11 machine (Intel Arc 140V): intro movie, menus,
+  attract demos and fights, sound clean. `scripts/package.sh` packs it.
 - Linux: `build_host.sh` builds the toolkit's Vulkan backend (`-DPS3RECOMP_RSX_VULKAN=ON`, headers only: it loads `libvulkan` at run
   time) and `main.cpp` opens it with `PS3RECOMP_VK_WINDOW=1` and the guest's own shaders (`PS3RECOMP_VK_GUEST_PROGRAMS=1`): the
   frame is rendered offscreen and blitted into an SDL2 window's swapchain. SDL needs the X11 (or Wayland) headers at build time,

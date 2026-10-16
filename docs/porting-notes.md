@@ -55,7 +55,7 @@ What was needed to get here (beyond the SPURS work above):
 - `patches/0009`: `RSX_ENGINE_SNAP_DIR=<dir>` (+ `RSX_ENGINE_SNAP_EVERY_S`, default 5) writes the presented frame to PPM every n seconds,
   which is how a run is followed without watching the window.
 
-Debug aids: `PAD_SCRIPT="<sec>:<mask>,..."` and `PAD_FILE=<path>` (cellPad masks: START 0x0008, UP 0x0010, DOWN 0x0040, LEFT 0x0080,
+Debug aids: `SC2HD_FPS=1` (presented frames per second, every 5 s), `PAD_SCRIPT="<sec>:<mask>,..."` and `PAD_FILE=<path>` (cellPad masks: START 0x0008, UP 0x0010, DOWN 0x0040, LEFT 0x0080,
 RIGHT 0x0020, CROSS 0x4000, CIRCLE 0x2000, TRIANGLE 0x1000), `PS3_FSLOG=1` (aio reads), `SC2HD_SAIL_TRACE=1`, `RSX_ENGINE_PASS_DUMP=<dir>`
 (+ `_AFTER`, `_MAX`, `_DRAWS`), `RSX_CONST_LOG=<lo>,<hi>`, `NV3089_GATE=<file>`.
 
@@ -94,6 +94,29 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
 - `patches/0022`: accessor functions for the thread-local state of the PPU trampoline and the SPU context, so a separate module can reach it (see docs/architecture.md). `patches/0023`: the LGPL ATRAC3plus decoder is optional (`PS3RECOMP_ATRAC_LGPL`), the host is built without it.
 - `patches/0024`: the SDL gamepad layer runs on one dedicated thread, so a controller plugged in after the start is seen. `patches/0029`: an SDL keyboard fallback for cellPad on Linux (the pad mapping of 0005).
 - Windows (MinGW): `patches/0025` (the PPU loader builds with GCC), `patches/0026` (`__thread` instead of `__declspec(thread)`, which GCC ignores, so thread-locals were shared globals), `patches/0027` (cellAudio never mixes two blocks back to back on WASAPI), `patches/0028` (window icon hook).
+- Windows, what kept the game at a frame a second with broken sound after the intro, and what got it running (measured on an
+  Intel Core Ultra 7 258V with Arc 140V graphics):
+  - `patches/0030`: the D3D12 backend keyed its vertex program cache on the microcode store from the start slot to the end of
+    everything uploaded, so every upload behind the drawn program missed the cache and ran `D3DCompile` on the FIFO thread.
+    The game's audio engine is fed from the same frame loop, which is where the "6 of every 14 blocks" came from.
+  - The host is built with clang (`scripts/mingw-w64.cmake`): GCC's emulated TLS was a tenth of the SPU threads' time.
+  - `patches/0031`: the Vulkan backend on Windows. The D3D12 backend renders the scene into the 2x supersampled target but has
+    no resolve for it (the engine's `patches/0006`), so the picture stayed black; Vulkan runs the same draw engine as Metal.
+  - `patches/0033`: `patches/0010` released the previous depth snapshot on every new one, but the Vulkan backend reuses one
+    snapshot per depth target, so the engine freed the texture it had just been handed and the shadow map (and the frame)
+    came out magenta. Also one whole-surface readback per picture instead of one per resolve tile or band.
+  - `patches/0032`: the Vulkan engine backend waited on the GPU after every draw, upload and clear (three frames a second in a
+    fight); the work is now recorded into one command buffer and submitted at readbacks and presents.
+  - `patches/0034`: the per-frame front-buffer copy is a row copy instead of an accessor call pair per pixel.
+  - `patches/0035`: with the frame faster, 5-10% of the audio blocks in a fight came out silent (crackle): `patches/0027`'s
+    4 ms minimum gap between two mixed blocks, measured from a `Sleep(1)` that wakes late, often left the game's audio
+    thread less time than that. The mix is now paced on the 5.33 ms block clock with a high-resolution timer: 0% silent
+    blocks and exactly 187.5 blocks a second (`AUDIO_RATE=1`, `AUDIO_WAV=`).
+  - Tried and dropped: a fast path in the guest memory accessors that skipped their idle diagnostic hooks (well over half of
+    the game thread in a fight). The frame thread limits the frame rate, so it gained nothing there, and with the old 4 ms
+    audio gap it made the late audio blocks worse (17-20%).
+  - `main.cpp`: a guest frame is presented (and its flip completed) at most once per 60 Hz vblank, as on a PS3 driving a 60 Hz
+    output. On a 120 Hz display the FIFO swapchain otherwise let the game flip about 110 times a second.
 - `patches/0015`: the `if (_n++ < N)` log caps used signed counters that wrapped negative after 2^31 calls and then printed on every call (millions of `[spu] drain-resume` lines in battle); they now saturate.
 - MP3 without firmware: MultiStream loads Sony's decoder `flashMP3.pic` into local store and calls one function of it per
   frame. `src/mp3_hle.c` answers that call on the host (decoder core: `src/third_party/dr_mp3_core.h`, dr_mp3/minimp3,
@@ -115,5 +138,5 @@ Open:
 - Input was only driven through `PAD_SCRIPT`/`PAD_FILE`; the keyboard fallbacks (macOS, Linux; Linux only with synthetic key events) and real controllers are untested.
 - Rare FIFO decode failures (`FIFO JUMP to unmapped IO ... drain stops`, 0-3 per minute, most often while a battle loads) lose that frame's commands.
 - `[mfc] REJECTED malformed transfer` from SPU image 2 appears now and then.
-- Windows (D3D12) has only been cross-built, Linux draws through the toolkit's Vulkan backend in an SDL2 window (null backend without a display; only seen on llvmpipe); `rsx_live_draw.c` (D3D12) lacks the supersample resolve of `patches/0006`.
+- Windows draws through the Vulkan backend (fights at 20-35 frames a second on an Arc 140V: two full GPU readbacks a frame), Linux draws through the toolkit's Vulkan backend in an SDL2 window (null backend without a display; only seen on llvmpipe); `rsx_live_draw.c` (D3D12) lacks the supersample resolve of `patches/0006`.
 - "chain gives up" after 20 s is harmless (job chains starting with a GUARD the game has not notified yet).

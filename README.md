@@ -2,13 +2,15 @@
 
 This project runs the PlayStation 3 game **Soulcalibur II HD Online** natively on a Mac/PC. It is not an emulator: the game's
 PowerPC (PPU) and Cell SPU code is translated ahead of time into C/C++ and compiled for your machine, on top of the
-[ps3recomp](https://github.com/sp00nznet/ps3recomp) runtime. Graphics go through Metal on macOS (Vulkan on Linux, D3D12 on Windows), sound through SDL.
+[ps3recomp](https://github.com/sp00nznet/ps3recomp) runtime. Graphics go through Metal on macOS and Vulkan on Linux and Windows, sound through SDL (WASAPI on Windows).
 
 **You bring the game.** Nothing from the game, from Sony's firmware or from anyone's PS3 is in this repository or in the
 release zip. On first start the launcher installs *your* copy of the game, translates it and compiles the result on *your*
 computer. The translated code never leaves it.
 
-> Status: **works on Apple Silicon Macs (Metal)**. The host and the game module also build for Linux (a Vulkan window, tried only on a software rasteriser) and, cross-compiled, for Windows (D3D12, never run on Windows). See [Known issues](#known-issues).
+> Status: **works on Apple Silicon Macs (Metal)**, and on Windows (Vulkan; tested on an Intel Core Ultra 7 258V / Arc 140V
+> laptop, see [Known issues](#known-issues)). The host and the game module also build for Linux (a Vulkan window, tried only on a
+> software rasteriser).
 
 ## What you need
 
@@ -106,9 +108,11 @@ derived from the game.
   only run on Mesa's software rasteriser (llvmpipe) under Xvfb, never on a real GPU; there is no FXAA, no anisotropic filtering and the
   window is a fixed 1280x720. With no `DISPLAY` or `WAYLAND_DISPLAY` (or with
   `SC2HD_HEADLESS=1`), and when there is no Vulkan device, the host runs on the toolkit's null backend instead, with no window.
-- Windows: the host and the game DLL cross-compile with MinGW-w64 and run under Wine on a Mac (intro movie, sound without
-  crackle). After the intro the game is slow there (about 1 frame/s with a black picture, and the audio engine delivers only 6 blocks of
-  every 14) and the cause is not found; nothing has run on a real Windows machine, and the Windows package is untested.
+- Windows: the game is drawn through the Vulkan backend in an SDL window (D3D12 is only the fallback for a machine with no
+  Vulkan driver, `SC2HD_D3D12=1`; it draws nothing after the intro). Menus and movies run at 60 frames a second; a fight on an
+  integrated GPU (Intel Arc 140V) runs at about 20-35, because the scene is read back from the GPU twice a frame (the game's
+  supersampled resolve and its front-buffer copy); `SC2HD_FPS=1` prints the rate. `Esc` closes the window, as on Linux. The intro movie now plays in full
+  (about two and a half minutes); Start skips it.
 
 ## How it works, building from source
 
@@ -122,7 +126,8 @@ headers: `apt install libvulkan-dev libx11-dev`, and at run time a Vulkan driver
 
 ```sh
 scripts/build_host.sh     # clones the pinned toolkit, applies patches/, builds the static dependencies and the host
-SC2HD_TARGET=windows scripts/build_host.sh   # cross-compile for Windows with MinGW-w64 into dist/host-windows
+SC2HD_TARGET=windows scripts/build_host.sh   # cross-compile for Windows with MinGW-w64 (clang preferred) into dist/host-windows
+                          # (in Git Bash on Windows, plain scripts/build_host.sh builds the same natively)
 scripts/package.sh        # a dist/sc2hd-<version>-<os>-<arch>.zip for every host that is built (macOS/Linux, Windows)
 ./sc2hd.py --pkg …                # in a checkout the launcher uses dist/host
 ```

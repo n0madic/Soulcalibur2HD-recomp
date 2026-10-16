@@ -172,10 +172,43 @@ static bool load_game_module(const char* path)
 /* ---------------------------------------------------------------------------
  * RSX present backend
  * -----------------------------------------------------------------------*/
-/* D3D12 on Windows, Metal on Apple, and on Linux a Vulkan window with the null backend's headless software path as
- * the fallback for a machine with no Vulkan device or no display -- the same selection runtime/host/host_posix.c makes.
+/* On Windows a Vulkan window with D3D12 as the fallback, Metal on Apple, and on Linux a Vulkan window with the null
+ * backend's headless software path as the fallback for a machine with no Vulkan device or no display -- the same
+ * selection runtime/host/host_posix.c makes.
  * All of them expose the same three entry points, so the frame clock below is backend-agnostic. */
-#if defined(_WIN32)
+#if defined(_WIN32) && defined(PS3RECOMP_RSX_VULKAN)
+/* Windows: the Vulkan window first. The D3D12 backend has only the toolkit's old live-draw path, which draws this
+ * game's scene into a supersampled target it never resolves (a black picture after the intro); Vulkan runs the same
+ * draw engine as Metal. D3D12 stays as the fallback for a machine without a Vulkan driver. SC2HD_D3D12=1 forces it. */
+extern "C" int  rsx_d3d12_backend_init(uint32_t w, uint32_t h, const char* title);
+extern "C" void rsx_d3d12_backend_present(void);
+extern "C" int  rsx_d3d12_backend_pump_messages(void);
+extern "C" int  rsx_vulkan_backend_init(uint32_t w, uint32_t h, const char* title);
+extern "C" void rsx_vulkan_backend_present(void);
+extern "C" int  rsx_vulkan_backend_pump_messages(void);
+struct RsxBackend {
+    const char* name;
+    int  (*init)(uint32_t w, uint32_t h, const char* title);
+    void (*present)(void);
+    int  (*pump)(void);
+};
+static RsxBackend g_rsx = { "D3D12", rsx_d3d12_backend_init, rsx_d3d12_backend_present,
+                            rsx_d3d12_backend_pump_messages };
+
+static int rsx_backend_init(uint32_t w, uint32_t h, const char* title)
+{
+    if (!getenv("SC2HD_D3D12")) {
+        const RsxBackend vulkan = { "Vulkan", rsx_vulkan_backend_init, rsx_vulkan_backend_present,
+                                    rsx_vulkan_backend_pump_messages };
+        if (vulkan.init(w, h, title) == 0) { g_rsx = vulkan; return 0; }
+        fprintf(stderr, "[rsx] Vulkan backend unavailable, falling back to D3D12\n");
+    }
+    return g_rsx.init(w, h, title);
+}
+#  define rsx_backend_present g_rsx.present
+#  define rsx_backend_pump    g_rsx.pump
+#  define RSX_BACKEND_NAME    g_rsx.name
+#elif defined(_WIN32)
 extern "C" int  rsx_d3d12_backend_init(uint32_t w, uint32_t h, const char* title);
 extern "C" void rsx_d3d12_backend_present(void);
 extern "C" int  rsx_d3d12_backend_pump_messages(void);
@@ -328,6 +361,16 @@ static DWORD WINAPI frame_clock(LPVOID)
 
     unsigned  last_flip = 0;
     ULONGLONG next_tick = GetTickCount64();
+    /* At most one guest frame per vblank, as on a PS3 driving a 60 Hz output. Presenting completes the flip, and
+     * the game renders its next frame as soon as it does: on a 120 Hz display the Vulkan swapchain let it flip about
+     * 110 times a second. The Metal path is left as it was. */
+#ifdef __APPLE__
+    const int flip_per_vblank = 0;
+#else
+    const int flip_per_vblank = 1;
+#endif
+    unsigned vblanks = 0, presented_vblank = ~0u;
+#define FLIP_ALLOWED() (!flip_per_vblank || presented_vblank != vblanks)
 
     for (;;) {
         Sleep(4);
@@ -336,14 +379,16 @@ static DWORD WINAPI frame_clock(LPVOID)
         int fired = 0;
         while ((long long)(now - next_tick) >= 0 && fired < 240) {
             cellGcmTickVBlank();
+            vblanks++;
             complete_stale_flip();
             /* Present a pending flip BEFORE draining any further. The flip
              * fires at a get==put frame boundary on the guest thread, so the
              * batch held right now is exactly the completed frame; presenting
              * after the drain races the guest's next-frame writes and shows a
              * mixed one. */
-            if (rsx_ok && cellGcm_take_flip_pending()) {
+            if (rsx_ok && FLIP_ALLOWED() && cellGcm_take_flip_pending()) {
                 present_guest_frame();
+                presented_vblank = vblanks;
                 last_flip = cellGcm_flip_request_count();
             }
             /* Drain the FIFO every tick. This is what writes the RSX sync-fence
@@ -355,13 +400,23 @@ static DWORD WINAPI frame_clock(LPVOID)
         }
         if (fired >= 240) next_tick = now;   /* fell too far behind -- resync */
 
+        /* SC2HD_FPS=1: guest frames presented per second, every 5 s. */
+        { static int on = -1; static ULONGLONG t0; static LONG f0;
+          if (on < 0) { on = getenv("SC2HD_FPS") ? 1 : 0; t0 = now; f0 = g_frames_presented; }
+          if (on && now - t0 >= 5000) {
+              const LONG f = g_frames_presented;
+              fprintf(stderr, "[fps] %.1f\n", (f - f0) * 1000.0 / (double)(now - t0));
+              t0 = now; f0 = f;
+          } }
+
         /* Drain at the outer cadence too, not only on the 16 ms tick: titles
          * fence every render pass on a label the drain writes, and one wave of
          * those at 16 ms apiece paces the guest into single-figure frame rates.
          * The real RSX writes them in microseconds. */
         if (rsx_ok) {
-            if (cellGcm_take_flip_pending()) {
+            if (FLIP_ALLOWED() && cellGcm_take_flip_pending()) {
                 present_guest_frame();
+                presented_vblank = vblanks;
                 last_flip = cellGcm_flip_request_count();
             }
             cellGcm_rsx_process_fifo();
@@ -376,14 +431,16 @@ static DWORD WINAPI frame_clock(LPVOID)
              * drain mid-frame and flash a partial one. Before the first flip
              * present freely, so the window is not blank during boot. */
             unsigned fc = cellGcm_flip_request_count();
-            if (fc != last_flip) {
+            if (fc != last_flip && FLIP_ALLOWED()) {
                 present_guest_frame();
+                presented_vblank = vblanks;
                 last_flip = fc;
             } else if (fc == 0) {
                 rsx_backend_present();
             }
         }
     }
+#undef FLIP_ALLOWED
     return 0;
 }
 

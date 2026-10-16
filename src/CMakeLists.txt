@@ -35,6 +35,17 @@ message(STATUS "ps3recomp SDK:   ${PS3RECOMP_DIR}")
 # The host links no LGPL code: the ATRAC3plus decoder is swapped for a stub (the game imports no cellAtrac).
 set(PS3RECOMP_ATRAC_LGPL OFF CACHE BOOL "" FORCE)
 
+if(WIN32)
+    # Windows 10 API level for the runtime too (GetCurrentThreadStackLimits needs 8.0); some MinGW distributions
+    # default to Windows 7.
+    add_compile_definitions(_WIN32_WINNT=0x0A00)
+endif()
+if(MINGW AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # Clang on a GCC-flavoured MinGW (libstdc++, winpthreads) does not put winpthread after libstdc++ in a static
+    # link the way GCC's driver does.
+    string(APPEND CMAKE_CXX_STANDARD_LIBRARIES " -lpthread")
+endif()
+
 # ---------------------------------------------------------------------------
 # ps3recomp runtime library
 # ---------------------------------------------------------------------------

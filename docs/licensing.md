@@ -16,7 +16,9 @@ RPCS3 (GPL-2.0-or-later); the patches apply to the MIT-licensed toolkit and stay
 | glslang (static) | BSD-3-Clause, with MIT and Apache-2.0 parts |
 | SPIRV-Tools (static) | Apache-2.0 |
 | SPIRV-Headers | MIT-style (Khronos) |
-| SPIRV-Cross (static) | Apache-2.0 |
+| SPIRV-Cross (static; not in the Windows host) | Apache-2.0 |
+| Vulkan-Headers (Windows: compiled in, `vulkan-1.dll` is the system's) | Apache-2.0 / MIT |
+| winpthreads and libstdc++ of the MinGW-w64 toolchain (Windows, static) | MIT-style / GPL-3.0 with the GCC Runtime Library Exception |
 | dr_mp3 / minimp3 core (`mp3_hle.c`) | public domain |
 | H.264, AAC-LC decoders and MP4 demuxer (`src/media/`) | ours, GPL-2.0-or-later; the numeric tables of the two standards in `h264_tables.h` / `aac_tables.h` are generated from FFmpeg's copy (`scripts/gen_media_tables.py`), no FFmpeg code is used |
 | ATRAC3plus decoder (LGPL-2.1) | **not linked**: built with `PS3RECOMP_ATRAC_LGPL=OFF`, the game imports no cellAtrac |

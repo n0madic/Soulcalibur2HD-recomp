@@ -1,0 +1,120 @@
+Draw engine: one readback per picture, and a depth snapshot the backend keeps is not released.
+
+- A resolve reads the scene back in 512x512 tiles and a front-buffer copy in a 1024- and a 256-pixel band; each
+  piece was its own flush, wait and readback. The engine now reads the whole surface once and serves the pieces
+  from that copy until anything is drawn, cleared or written into a surface.
+- patches/0010 releases the previous depth snapshot when a new one is taken. The Vulkan backend refills one
+  snapshot per depth target and hands back the same handle, so the engine released the texture it had just been
+  given: the shadow map sampled the backend's magenta "nothing bound" texture and the whole frame came out magenta.
+
+---
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+index 8ab9bb1..cca6296 100644
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -158,6 +158,7 @@ static struct {
+     u32 last_present_surface;
+     u32 last_flip_buffer;
+     u64 write_serial;       /* orders colour and depth writes to one address */
++    u64 readback_epoch;     /* bumped by every colour draw, clear or write: invalidates the readback copy */
+ 
+     /* staging: decoded texture levels, the constant blocks, the index list */
+     u8* tex_staging;
+@@ -569,6 +570,7 @@ static u32 eng_surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+ 
+     eng_surface* s = &g.surfaces[slot];
+     if (s->handle) g.be->color_target_release(g.be->user, s->handle);
++    g.readback_epoch++;
+     s->location = location; s->offset = offset;
+     s->w = want_w; s->h = want_h; s->fmt = want_fmt;
+     s->handle = handle;
+@@ -682,6 +684,31 @@ static u8* eng_coherence_buffer(u32 bytes)
+     return s_coherence_rows;
+ }
+ 
++/* The last whole-surface readback. A title reads one picture back in pieces -- a resolve in 512x512 tiles, a
++ * display buffer in a 1024- and a 256-pixel-wide band -- and each piece used to be its own GPU flush and wait.
++ * The copy stays valid until anything is drawn, cleared or written into any surface (g.readback_epoch), or the
++ * surface is recreated (its handle changes). */
++static struct { u32 handle, w, h; u64 epoch; u8* px; size_t cap; } s_rbc;
++
++static int eng_readback_rows(const eng_surface* s, u32 x, u32 y, u32 w, u32 h, u8* rows)
++{
++    if (s_rbc.handle != s->handle || s_rbc.epoch != g.readback_epoch || s_rbc.w != s->w || s_rbc.h != s->h) {
++        const size_t need = (size_t)s->w * 4u * s->h;
++        if (need > s_rbc.cap) {
++            u8* n = (u8*)realloc(s_rbc.px, need);
++            if (!n) return 0;
++            s_rbc.px = n;
++            s_rbc.cap = need;
++        }
++        g.be->submit_and_wait(g.be->user, RSX_BE_FLUSH_GUEST_REFERENCE);
++        g.be->readback(g.be->user, s->handle, 0, 0, s->w, s->h, s_rbc.px, s->w * 4u);
++        s_rbc.handle = s->handle; s_rbc.w = s->w; s_rbc.h = s->h; s_rbc.epoch = g.readback_epoch;
++    }
++    for (u32 r = 0; r < h; r++)
++        memcpy(rows + (size_t)r * w * 4u, s_rbc.px + ((size_t)(y + r) * s->w + x) * 4u, (size_t)w * 4u);
++    return 1;
++}
++
+ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32 h)
+ {
+     if (!g.ready || !g.be->readback || !pitch || !w || !h) return;
+@@ -697,9 +724,7 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
+     if (x + w > s->w) w = s->w - x;
+     if (y + h > s->h) h = s->h - y;
+     u8* rows = eng_coherence_buffer(w * 4u * h);
+-    if (!rows) return;
+-    g.be->submit_and_wait(g.be->user, RSX_BE_FLUSH_GUEST_REFERENCE);
+-    g.be->readback(g.be->user, s->handle, x, y, w, h, rows, w * 4u);
++    if (!rows || !eng_readback_rows(s, x, y, w, h, rows)) return;
+     if (eng_coherence_log())
+         fprintf(stderr, "[rsx engine] guest_read %u:0x%08X %ux%u <- surface 0x%08X at %u,%u:"
+                         " %u non-zero pixels\n", location, offset, w, h, s->offset, x, y,
+@@ -750,9 +775,7 @@ int rsx_draw_engine_resolve_read(u32 src_loc, u32 src_offset, u32 src_pitch, u32
+     if (sx + w > s->w) w = s->w - sx;
+     if (sy + h > s->h) h = s->h - sy;
+     u8* rows = eng_coherence_buffer(w * 4u * h);
+-    if (!rows) return 0;
+-    g.be->submit_and_wait(g.be->user, RSX_BE_FLUSH_GUEST_REFERENCE);
+-    g.be->readback(g.be->user, s->handle, sx, sy, w, h, rows, w * 4u);
++    if (!rows || !eng_readback_rows(s, sx, sy, w, h, rows)) return 0;
+     if (eng_coherence_log())
+         fprintf(stderr, "[rsx engine] resolve_read %u:0x%08X k=%u %ux%u <- surface 0x%08X at %u,%u: %u non-zero pixels\n",
+                 src_loc, src_offset, k, w, h, s->offset, sx, sy, eng_nonzero_pixels(rows, w * h));
+@@ -807,6 +830,7 @@ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32
+                         " %u non-zero pixels\n", location, offset, w, h, s->offset, x, y,
+                 eng_nonzero_pixels(rows, w * h));
+     g.be->color_target_write(g.be->user, s->handle, x, y, w, h, rows, w * 4u);
++    g.readback_epoch++;
+ }
+ 
+ static u32 eng_current_surface(void)
+@@ -879,8 +903,9 @@ static u32 eng_zdepth_snapshot(u32 slot)
+     const u32 tex = g.be->depth_snapshot(g.be->user, z->handle, z->w, z->h);
+     if (!tex) return 0;
+     /* The previous snapshot is stale once a clear invalidated it; without this every frame's depth
+-     * map stayed allocated (3-4 MB a frame: 28 GB after two minutes of a fight). */
+-    if (z->snapshot) g.be->texture_release(g.be->user, z->snapshot);
++     * map stayed allocated (3-4 MB a frame: 28 GB after two minutes of a fight). A backend that refills one
++     * snapshot per depth target (Vulkan) hands back the same handle, which must not be released. */
++    if (z->snapshot && z->snapshot != tex) g.be->texture_release(g.be->user, z->snapshot);
+     z->snapshot = tex;
+     z->snapshot_valid = 1;
+     return tex;
+@@ -1176,6 +1201,7 @@ static void eng_zdepth_wrote(u32 slot, const rsx_dsp_surface* sf)
+ 
+ static void eng_surfaces_wrote(const u32* targets, u32 n_targets)
+ {
++    g.readback_epoch++;
+     const u64 serial = ++g.write_serial;
+     for (u32 i = 0; i < n_targets; i++) {
+         g.surfaces[targets[i]].color_serial = serial;
+@@ -2522,6 +2548,7 @@ void rsx_draw_engine_shutdown(void)
+     free(g.tex_staging); free(g.vp_cb); free(g.fp_cb); free(g.indices);
+     const rsx_draw_backend* be = g.be;
+     memset(&g, 0, sizeof g);
++    s_rbc.handle = 0;           /* the copy names a surface of the old backend state */
+     g.be = be;
+ }
+ 
