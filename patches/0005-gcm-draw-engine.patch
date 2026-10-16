@@ -307,7 +307,7 @@ index d8506de..b3065d5 100644
          state->transform_constant_load = data;
          return 0;
 diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
-index b438d87..bf071b6 100644
+index b438d87..bcf7114 100644
 --- a/libs/video/rsx_draw_engine.c
 +++ b/libs/video/rsx_draw_engine.c
 @@ -133,6 +133,21 @@ typedef struct {
@@ -566,11 +566,11 @@ index b438d87..bf071b6 100644
 +            const eng_rect* q = &r->rects[i];
 +            eng_store_guest_rows(r->location, r->offset + q->y * r->pitch + q->x * 4u, r->pitch,
 +                                 rows + ((size_t)(q->y - y0) * bw + (q->x - x0)) * 4u, bw, q->w, q->h);
-         }
++        }
 +        if (eng_coherence_log())
 +            fprintf(stderr, "[rsx engine] resolve %u:0x%08X %ux%u stored to guest memory (%u rectangles)\n",
 +                    r->location, r->offset, r->w, r->h, r->n_rects);
-     }
++    }
 +    r->n_rects = 0;
 +    eng_textures_rehash(r->location, r->offset, r->pitch * r->h);
 +}
@@ -648,8 +648,8 @@ index b438d87..bf071b6 100644
 +        if (q->x < p->x + p->w && p->x < q->x + q->w && q->y < p->y + p->h && p->y < q->y + q->h) {
 +            eng_resolve_to_guest(r);
 +            return 1;
-+        }
-+    }
+         }
+     }
 +    if (r->n_rects >= ENG_MAX_RESOLVE_RECTS) eng_resolve_to_guest(r);
 +    return 1;
 +}
@@ -871,16 +871,21 @@ index b438d87..bf071b6 100644
      if (s_pd.state == 0) pd_capturing();
      if (s_pd.state == 1 && !s_pd.after_s && g.guest_draws >= s_pd.min_draws) {
          if (pd_open_index())
-@@ -2425,6 +2777,8 @@ void rsx_draw_engine_shutdown(void)
+@@ -2423,8 +2775,12 @@ void rsx_draw_engine_shutdown(void)
+         if (g.pipelines[i].handle) g.be->pipeline_release(g.be->user, g.pipelines[i].handle);
+     for (u32 i = 0; i < g.n_surfaces; i++)
          if (g.surfaces[i].handle) g.be->color_target_release(g.be->user, g.surfaces[i].handle);
-     for (u32 i = 0; i < g.n_zdepths; i++)
+-    for (u32 i = 0; i < g.n_zdepths; i++)
++    for (u32 i = 0; i < g.n_zdepths; i++) {
          if (g.zdepths[i].handle) g.be->depth_target_release(g.be->user, g.zdepths[i].handle);
++        if (g.zdepths[i].snapshot) g.be->texture_release(g.be->user, g.zdepths[i].snapshot);
++    }
 +    for (u32 i = 0; i < g.n_resolves; i++)
 +        if (g.resolves[i].handle) g.be->color_target_release(g.be->user, g.resolves[i].handle);
      if (g.ready && g.be->shutdown) g.be->shutdown(g.be->user);
  
      rsx_draw_engine_set_guest_memory(NULL, NULL);
-@@ -2434,6 +2788,7 @@ void rsx_draw_engine_shutdown(void)
+@@ -2434,6 +2790,7 @@ void rsx_draw_engine_shutdown(void)
      free(g.tex_staging); free(g.vp_cb); free(g.fp_cb); free(g.indices);
      const rsx_draw_backend* be = g.be;
      memset(&g, 0, sizeof g);
@@ -888,7 +893,7 @@ index b438d87..bf071b6 100644
      g.be = be;
  }
  
-@@ -2447,6 +2802,7 @@ void rsx_draw_engine_method(u32 method, u32 arg)
+@@ -2447,6 +2804,7 @@ void rsx_draw_engine_method(u32 method, u32 arg)
       * (0xE9xx, 0xEBxx) encode the subchannel bits as part of the address;
       * preserve them with the wider mask. */
      u32 m = (method >= 0xE000u) ? (method & 0xFFFCu) : (method & 0x1FFCu);

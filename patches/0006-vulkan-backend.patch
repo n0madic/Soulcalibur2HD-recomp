@@ -59,7 +59,7 @@ index 85feb90..1b6518b 100644
      find_package(glslang CONFIG QUIET)
  
 diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
-index 87ea864..bdc2064 100644
+index 87ea864..e6817b3 100644
 --- a/libs/video/rsx_vulkan_backend.c
 +++ b/libs/video/rsx_vulkan_backend.c
 @@ -2,7 +2,7 @@
@@ -1037,7 +1037,13 @@ index 87ea864..bdc2064 100644
  };
  
  static rsx_backend s_vulkan_backend = {
-@@ -3394,7 +3699,7 @@ void rsx_vulkan_backend_shutdown(void)
+@@ -3390,11 +3695,12 @@ void rsx_vulkan_backend_shutdown(void)
+         vk_destroy_buffer(&s_vk.vertices);
+         vk_destroy_buffer(&s_vk.readback);
+         if (s_vk.fence) pvkDestroyFence(s_vk.device, s_vk.fence, NULL);
+-        if (s_vk.pool)  pvkDestroyCommandPool(s_vk.device, s_vk.pool, NULL);
++        if (s_vk.pool)  pvkDestroyCommandPool(s_vk.device, s_vk.pool, NULL);   /* frees the pool's command buffers */
++        s_cmd_win = VK_NULL_HANDLE;      /* the window present's command buffer went with the pool: a re-init allocates anew */
          pvkDestroyDevice(s_vk.device, NULL);
      }
      if (s_vk.instance && pvkDestroyInstance) pvkDestroyInstance(s_vk.instance, NULL);
@@ -1046,7 +1052,7 @@ index 87ea864..bdc2064 100644
      free(s_vk.cpu_verts);
      memset(&s_vk, 0, sizeof s_vk);
  }
-@@ -3430,4 +3735,4 @@ u32 rsx_vulkan_backend_guest_draws(void)
+@@ -3430,4 +3736,4 @@ u32 rsx_vulkan_backend_guest_draws(void)
      return s_vk.eng_active ? rsx_draw_engine_guest_draws() : s_g.last_draws;
  }
  
