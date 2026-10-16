@@ -61,7 +61,7 @@ Later runs go straight to step 4. Nothing is redone unless the inputs change.
 ## Options
 
 ```
-./sc2hd.py [--fxaa | --no-fxaa] [--af N] [--window WxH] [--fullscreen]
+./sc2hd.py [--fxaa | --no-fxaa] [--af N] [--window WxH] [--fullscreen] [--unlock | --unlock-save]
 ```
 
 | Option | Meaning |
@@ -70,6 +70,8 @@ Later runs go straight to step 4. Nothing is redone unless the inputs change.
 | `--af N` | anisotropic texture filtering 1 (off) … 16 (default 16) (macOS) |
 | `--window WxH` | initial window size in points, e.g. `1600x900` (default 1280x720). The window can be resized; the 16:9 picture keeps its shape and the rest is black (macOS) |
 | `--fullscreen` | start in fullscreen. In the game F11 or Alt+Enter (macOS: Ctrl+Cmd+F or the green button) switches between fullscreen and a window; the window can be resized and maximized, the picture keeps its 16:9 shape |
+| `--unlock` | unlock all playable characters for this run, without finishing the game. The host sets the flags in the game's memory as it reads the save data and puts the original ones back when the game saves, so the save file keeps your own progress |
+| `--unlock-save` | unlock all playable characters for good, by writing the flags into the save data file (before the game starts). It needs a save: on the very first run start the game once, let it create the save, quit, and run with `--unlock-save` again |
 | `--data DIR` | where everything derived from the game lives (default `./data` in the directory you start from, or `SC2HD_HOME`) |
 | `--compiler auto\|system\|zig` | which compiler builds the game library (default: a suitable system clang, else zig) |
 | `build` / `run` | only build / only run |

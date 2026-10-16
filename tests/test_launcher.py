@@ -174,5 +174,52 @@ class ExpandInputsTest(unittest.TestCase):
         self.assertEqual(game._expand_inputs(inputs), inputs)
 
 
+class UnlockTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.files = game.GameFiles(Path(self.tmp.name), "NPUB31366", "01.01")
+        self.dir = self.files.hdd0 / "home" / "00000001" / "savedata" / "NPUB31366-APP-SAVEDATA-"
+
+    def write_save(self, data: bytes) -> Path:
+        self.dir.mkdir(parents=True)
+        path = self.dir / "APP-DATA"
+        path.write_bytes(data)
+        return path
+
+    def test_flags_are_set_and_the_rest_of_the_save_is_kept(self):
+        fresh = bytes(range(256)) * 28
+        fresh = fresh[:game.SAVE_FILE_SIZE]
+        path = self.write_save(fresh)
+        self.assertTrue(game.unlock_all_characters_in_save(self.files))
+        saved = path.read_bytes()
+        self.assertEqual(saved[:game.UNLOCK_OFFSET], fresh[:game.UNLOCK_OFFSET])
+        self.assertEqual(saved[game.UNLOCK_OFFSET:game.UNLOCK_OFFSET + len(game.UNLOCK_BYTES)], game.UNLOCK_BYTES)
+        self.assertEqual(saved[game.UNLOCK_OFFSET + len(game.UNLOCK_BYTES):], fresh[game.UNLOCK_OFFSET + len(game.UNLOCK_BYTES):])
+
+    def test_unlocking_twice_changes_nothing(self):
+        path = self.write_save(bytes(game.SAVE_FILE_SIZE))
+        game.unlock_all_characters_in_save(self.files)
+        once = path.read_bytes()
+        self.assertTrue(game.unlock_all_characters_in_save(self.files))
+        self.assertEqual(path.read_bytes(), once)
+
+    def test_unlock_environment_names_the_same_bytes(self):
+        offset, hexbytes = game.unlock_env()["SC2HD_UNLOCK"].split(":")
+        self.assertEqual((int(offset), bytes.fromhex(hexbytes)), (game.UNLOCK_OFFSET, game.UNLOCK_BYTES))
+
+    def test_no_save_yet_is_reported_not_created(self):
+        with self.assertLogs("sc2hd.game", "WARNING"):
+            self.assertFalse(game.unlock_all_characters_in_save(self.files))
+        self.assertFalse(self.dir.exists())
+
+    def test_save_of_another_size_is_left_alone(self):
+        odd = bytes(game.SAVE_FILE_SIZE + 1)
+        path = self.write_save(odd)
+        with self.assertLogs("sc2hd.game", "WARNING"):
+            self.assertFalse(game.unlock_all_characters_in_save(self.files))
+        self.assertEqual(path.read_bytes(), odd)
+
+
 if __name__ == "__main__":
     unittest.main()

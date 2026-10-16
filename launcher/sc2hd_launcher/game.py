@@ -39,6 +39,47 @@ class GameFiles:
         return [p for p in (self.elf, self.param_sfo, self.root / "USRDIR" / "ROOT.EDAT") if not p.exists()]
 
 
+# The game keeps what is unlocked in its save data (APP-DATA, plain bytes: the port does no PFD encryption). Two bytes
+# starting at offset 29 hold the flags of the characters a new save has locked: byte 29 and the low bits of byte 30
+# (found by setting them in a copy of a fresh save and looking at the character select in Arcade and Practice; a
+# fighter shows up in a mode once its flag is set). Setting both bytes to 0xFF unlocks all 25 slots of the roster.
+SAVE_FILE_SIZE = 7007
+UNLOCK_OFFSET = 29
+UNLOCK_BYTES = b"\xff\xff"
+
+
+def unlock_env() -> dict[str, str]:
+    """The environment that has the host set the unlock flags in the game's memory as it reads the save data."""
+    return {"SC2HD_UNLOCK": f"{UNLOCK_OFFSET}:{UNLOCK_BYTES.hex()}"}
+
+
+def save_file(files: GameFiles) -> Path | None:
+    """The game's save data file (the one profile the port has), or None while there is no save yet."""
+    found = sorted(files.hdd0.glob(f"home/*/savedata/{files.title_id}-APP-SAVEDATA-/APP-DATA"))
+    return found[0] if found else None
+
+
+def unlock_all_characters_in_save(files: GameFiles) -> bool:
+    """Writes the unlock flags into the save data file; False if there is nothing to patch yet."""
+    path = save_file(files)
+    if path is None:
+        LOG.warning("--unlock-save: there is no save data yet. Start the game once, let it create the save, quit, and "
+                    "run with --unlock-save again")
+        return False
+    data = bytearray(path.read_bytes())
+    if len(data) != SAVE_FILE_SIZE:
+        LOG.warning("--unlock-save: %s is %d bytes, not the %d this was made for; left alone", path, len(data), SAVE_FILE_SIZE)
+        return False
+    end = UNLOCK_OFFSET + len(UNLOCK_BYTES)
+    if data[UNLOCK_OFFSET:end] == UNLOCK_BYTES:
+        LOG.info("--unlock-save: all characters are already unlocked")
+        return True
+    data[UNLOCK_OFFSET:end] = UNLOCK_BYTES
+    path.write_bytes(data)
+    LOG.info("--unlock-save: all characters unlocked in %s", path)
+    return True
+
+
 def read_sfo(path: Path) -> dict[str, str | int]:
     """The key/value pairs of a PARAM.SFO."""
     raw = path.read_bytes()

@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from . import devhost, runner
-from .game import GameError, GameFiles, from_install, install
+from .game import GameError, GameFiles, from_install, install, unlock_all_characters_in_save, unlock_env
 from .lift import PROFILES, LiftResult, lift_game
 from .module import ModuleInputs, build_module, module_name
 from .toolchain import ToolchainError, describe, find_compiler, host_key
@@ -119,6 +119,12 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--af", type=int, metavar="N", help="anisotropic filtering 1 (off) .. 16 (default)")
     g.add_argument("--window", metavar="WxH", help="initial window size in points (default 1280x720)")
     g.add_argument("--fullscreen", action="store_true", help="start in fullscreen (F11 / Alt+Enter, macOS: Ctrl+Cmd+F)")
+    g.add_argument("--unlock", action="store_true",
+                   help="unlock all playable characters for this run, without finishing the game; the save data on "
+                        "disk is not changed")
+    g.add_argument("--unlock-save", action="store_true",
+                   help="unlock all playable characters for good, by changing the save data (needs a save: start the "
+                        "game once first)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname).1s %(name)s: %(message)s")
 
@@ -166,7 +172,11 @@ def main(argv: list[str] | None = None) -> int:
     except ToolchainError as e:
         raise SystemExit(str(e))
 
+    if args.unlock_save:
+        unlock_all_characters_in_save(files)
     env: dict[str, str] = {}
+    if args.unlock:
+        env.update(unlock_env())
     if args.fxaa is not None:
         env["PS3RECOMP_METAL_FXAA"] = "1" if args.fxaa else "0"
     if args.af is not None:

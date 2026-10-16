@@ -1,0 +1,121 @@
+cellSaveData: SC2HD_UNLOCK sets flags of the game's save data in memory only.
+
+- SC2HD_UNLOCK="<offset>:<hex bytes>" ORs the bytes into APP-DATA as the game reads it (the launcher's --unlock
+  uses it to open every character).
+- When the game writes APP-DATA the bits of the mask go back to what the file held when it was read, so the save on
+  disk keeps the player's own progress.
+
+---
+diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
+index 85907c3..a9db47f 100644
+--- a/libs/system/cellSaveData.c
++++ b/libs/system/cellSaveData.c
+@@ -658,6 +658,50 @@ static u32 enumerate_save_files(const char* save_path,
+     return count;
+ }
+ 
++/* SC2HD_UNLOCK="<offset>:<hex bytes>" (set by the launcher's --unlock): these bytes are ORed into the game's
++ * APP-DATA as the game reads it, so the flags in them are set for the session. When the game writes the file, the
++ * bits of the mask go back to what the file held when it was read: the save on disk is not changed by this. */
++#define UNLOCK_FILE "APP-DATA"
++#define UNLOCK_MAX  16
++static struct {
++    int parsed;
++    size_t off, len;
++    unsigned char mask[UNLOCK_MAX], orig[UNLOCK_MAX];
++    int have_orig;
++} s_unlock;
++
++static void unlock_parse(void)
++{
++    if (s_unlock.parsed) return;
++    s_unlock.parsed = 1;
++    const char* v = getenv("SC2HD_UNLOCK");
++    if (!v) return;
++    char* end;
++    unsigned long off = strtoul(v, &end, 10);
++    size_t n = (end != v && *end == ':') ? strlen(end + 1) : 0;
++    if (n == 0 || n % 2 || n / 2 > UNLOCK_MAX) {
++        printf("[cellSaveData] SC2HD_UNLOCK='%s' is not <offset>:<hex bytes>; ignored\n", v);
++        return;
++    }
++    for (size_t i = 0; i < n / 2; i++) {
++        unsigned int b;
++        if (sscanf(end + 1 + 2 * i, "%2x", &b) != 1) {
++            printf("[cellSaveData] SC2HD_UNLOCK='%s' is not <offset>:<hex bytes>; ignored\n", v);
++            return;
++        }
++        s_unlock.mask[i] = (unsigned char)b;
++    }
++    s_unlock.off = off;
++    s_unlock.len = n / 2;
++}
++
++/* Does the unlock mask apply to this file operation: the whole-file access to APP-DATA, which covers the mask. */
++static int unlock_applies(const char* name, u32 file_offset, size_t size)
++{
++    unlock_parse();
++    return s_unlock.len && !strcmp(name, UNLOCK_FILE) && file_offset == 0 && size >= s_unlock.off + s_unlock.len;
++}
++
+ /* Execute file callback: read/write/delete files in the save directory */
+ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
+ {
+@@ -703,12 +747,37 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
+         size_t got = fread(set->fileBuf, 1, read_size, fp);
+         int failed = ferror(fp);
+         if (fclose(fp) != 0) failed = 1;
++        if (!failed && unlock_applies(name, set->fileOffset, got)) {
++            unsigned char* buf = (unsigned char*)set->fileBuf + s_unlock.off;
++            for (size_t i = 0; i < s_unlock.len; i++) {
++                s_unlock.orig[i] = buf[i];
++                buf[i] |= s_unlock.mask[i];
++            }
++            s_unlock.have_orig = 1;
++            printf("[cellSaveData] SC2HD_UNLOCK: %zu bytes at %zu of %s set in memory\n", s_unlock.len, s_unlock.off, name);
++        }
+         return failed ? CELL_SAVEDATA_ERROR_ACCESS_ERROR : (s32)got;
+     }
+ 
+     case CELL_SAVEDATA_FILEOP_WRITE:
+     case CELL_SAVEDATA_FILEOP_WRITE_NOTRUNC: {
+         ensure_dirs(save_path);
++        size_t write_size = (size_t)set->fileSize;
++        if (write_size > set->fileBufSize) write_size = set->fileBufSize;
++        /* What goes to the disk: the game's buffer, except for the unlocked bits (see SC2HD_UNLOCK). Made before
++         * the file is opened, which truncates it. */
++        const void* out = set->fileBuf;
++        unsigned char* patched = NULL;
++        if (s_unlock.have_orig && unlock_applies(name, set->fileOffset, write_size)) {
++            patched = (unsigned char*)malloc(write_size);
++            if (!patched) return CELL_SAVEDATA_ERROR_ACCESS_ERROR;
++            memcpy(patched, set->fileBuf, write_size);
++            for (size_t i = 0; i < s_unlock.len; i++) {
++                unsigned char* b = patched + s_unlock.off + i;
++                *b = (unsigned char)((*b & ~s_unlock.mask[i]) | (s_unlock.orig[i] & s_unlock.mask[i]));
++            }
++            out = patched;
++        }
+         const char* mode;
+         if (set->fileOperation == CELL_SAVEDATA_FILEOP_WRITE && set->fileOffset == 0) {
+             mode = "wb";
+@@ -721,6 +790,7 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
+         }
+         if (!fp) {
+             printf("[cellSaveData] file write: cannot open '%s'\n", file_path);
++            free(patched);
+             return CELL_SAVEDATA_ERROR_ACCESS_ERROR;
+         }
+         if (set->fileOffset > 0) {
+@@ -730,9 +800,8 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
+             fseeko(fp, (off_t)set->fileOffset, SEEK_SET);
+ #endif
+         }
+-        size_t write_size = (size_t)set->fileSize;
+-        if (write_size > set->fileBufSize) write_size = set->fileBufSize;
+-        size_t wrote = fwrite(set->fileBuf, 1, write_size, fp);
++        size_t wrote = fwrite(out, 1, write_size, fp);
++        free(patched);
+         int failed = wrote != write_size;
+         if (fclose(fp) != 0) failed = 1;
+         if (!failed && set->fileType == CELL_SAVEDATA_FILETYPE_SECUREFILE)
