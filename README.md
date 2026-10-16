@@ -79,7 +79,7 @@ Later runs go straight to step 4. Nothing is redone unless the inputs change.
 ## Controls
 
 The keyboard is mapped like a pad: arrows = D-pad, `Z` = ✕, `X` = ○, `A` = □, `S` = △, `Q`/`W` = L1/R1, `1`/`2` = L2/R2,
-`Return` = Start, `Tab` = Select. `Cmd+Q` (Linux: `Esc`) or closing the window quits. Game controllers go through SDL; the keyboard and
+`Return` or `Esc` = Start (pauses a fight), `Tab` = Select. Closing the window (`Alt+F4`, macOS: `Cmd+Q`) quits. Game controllers go through SDL; the keyboard and
 controllers are not yet tested thoroughly.
 
 ## Where things are
@@ -107,7 +107,7 @@ derived from the game.
 - FXAA softens the HUD slightly. The game renders at 1280x720; there is no internal resolution scaling.
 - MP3 music is decoded on the host; about 9 % of the frames differ slightly from the console's decoder at loud transients.
 - Rare dropped frames from display-list decoding failures, mostly while a battle loads.
-- Linux: the picture is shown in an SDL2 window through the toolkit's Vulkan backend (X11 or Wayland, `Esc` or closing the window quits). It has
+- Linux: the picture is shown in an SDL2 window through the toolkit's Vulkan backend (X11 or Wayland, closing the window quits). It has
   only run on Mesa's software rasteriser (llvmpipe), under Xvfb and in WSL2's WSLg, never on a real GPU: the picture is right, but a
   fight runs at about 10 frames a second there (in WSL2, Ubuntu's Mesa has no Vulkan driver for the GPU, so llvmpipe is what runs). There
   is no FXAA, no anisotropic filtering and the window is a fixed 1280x720. With no `DISPLAY` or `WAYLAND_DISPLAY` (or with
@@ -115,7 +115,7 @@ derived from the game.
 - Windows: the game is drawn through the Vulkan backend in an SDL window (D3D12 is only the fallback for a machine with no
   Vulkan driver, `SC2HD_D3D12=1`; it draws nothing after the intro). Menus and movies run at 60 frames a second, and so does a
   fight on an integrated GPU (Intel Arc 140V) once its stage has loaded (the first seconds, while its shaders are built, are
-  slower); `SC2HD_FPS=1` prints the rate. `Esc` closes the window, as on Linux. The intro movie now plays in full
+  slower); `SC2HD_FPS=1` prints the rate. The intro movie now plays in full
   (about two and a half minutes); Start skips it.
 
 ## How it works, building from source
