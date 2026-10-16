@@ -32,6 +32,13 @@ class ArchFlagsTest(unittest.TestCase):
             with self.subTest(machine=machine), mock.patch.object(module.platform, "machine", return_value=machine):
                 self.assertEqual(module.arch_flags(compiler()), flags)
 
+    def test_system_clang_builds_for_this_cpu(self):
+        system = Compiler("system", ("clang",), ("clang++",))
+        for machine, flags in (("x86_64", ("-march=native", "-msse4.1")), ("AMD64", ("-march=native", "-msse4.1")),
+                               ("arm64", ())):
+            with self.subTest(machine=machine), mock.patch.object(module.platform, "machine", return_value=machine):
+                self.assertEqual(module.arch_flags(system), flags)
+
 
 class ModuleDefTest(unittest.TestCase):
     def test_exports_what_the_host_looks_up_as_data(self):

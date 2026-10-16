@@ -34,10 +34,15 @@ class ModuleBuildError(RuntimeError):
 
 def arch_flags(cc: Compiler) -> tuple[str, ...]:
     """Flags for the CPU the module is built for. On x86-64 the runtime's SPU helpers have SSE4.1 paths (spu_shufb is
-    about a tenth of the audio mixer task) that are only compiled in under __SSE4_1__, as the host is."""
+    about a tenth of the audio mixer task) that are only compiled in under __SSE4_1__, as the host is.
+    A system clang building for this machine also gets -march=native: zig does that by itself when it has no target,
+    and a Windows module built by a MinGW clang for the x86-64 baseline instead was slow enough in a fight that the
+    game's audio thread missed most of its blocks (80-90% of them silent)."""
     x86 = any("x86_64" in t or "x86-64" in t for t in cc.target) or (
         not cc.target and platform.machine().lower() in ("x86_64", "amd64"))
-    return ("-msse4.1",) if x86 else ()
+    if not x86:
+        return ()
+    return ("-march=native", "-msse4.1") if cc.kind == "system" and not cc.target else ("-msse4.1",)
 
 
 @dataclass(frozen=True)

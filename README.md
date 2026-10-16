@@ -25,9 +25,11 @@ computer. The translated code never leaves it.
 The files look like `…SC2HDONLINEGAME1.rap` (license), a long-named `….pkg` (the game, about 700 MB, often inside a `.zip`) and
 `UP0700-NPUB31366_00-SC2HDONLINEGAME1-A0101-V0100-PE.pkg` (the update). Versions 01.00 (the game alone) and 01.01 (with the update) are supported; the update is optional.
 
-The translated game is compiled with the Xcode command line tools' `clang` if you have them, otherwise the launcher downloads
+The translated game is compiled with the Xcode command line tools' `clang` if you have them (on Windows and Linux: a clang on
+`PATH`, such as a MinGW clang), otherwise the launcher downloads
 [zig](https://ziglang.org) 0.17.0 (about 55 MB, MIT, checked against a pinned SHA-256) into the data directory and uses its `zig cc`.
-It asks before downloading (`--yes` answers for you).
+It asks before downloading (`--yes` answers for you). Either way the game is compiled for your own processor (`-march=native`):
+built for the generic x86-64 baseline it is too slow in a fight on Windows, and most of the sound drops out.
 
 ## Quick start
 
