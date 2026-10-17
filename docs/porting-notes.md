@@ -33,6 +33,7 @@ top of it. When a PR is merged into the pinned revision its file is deleted.
 | `08-pr347` | #347 | `get` follows the walker across a JUMP |
 | `09-pr348` | #348 | the engine converts a transfer's rows a pixel at a time |
 | `10-pr349` | #349 | `CELL_FS_O_*` values, so `O_CREAT` creates |
+| `11-pr358` | #358 | the NV3089 source origin (12.4) counts as `origin << 16` in the copy loops and the engine write-back |
 
 ## Patches
 | Patch | Area |
@@ -96,9 +97,10 @@ What was needed to get here (beyond the SPURS work above):
 - `patches/0005`, `patches/0017`: since toolkit v0.15.0 the engine keeps an antialiased surface at sample resolution (the game's 2560x1440
   supersampled scene), so `rsx_draw_engine_resolve_read` (which expects the host surface at display size) no longer matched it and the
   six 2:1 resolve tiles went through the generic NV3089 copy, which read the whole surface back every frame (fights at 43 frames a
-  second on Metal). That copy's engine read also started one pixel after the loop's own first source pixel for the tiles' 1-pixel
-  source offset (`uv=0x00100010`): the first row and column of every tile stayed black, a grid over the picture; `nv3089_engine_read`
-  now starts where the loop does (`0005`). `0017` adds an optional backend call, `color_target_resolve`, a 1/k downscale on the GPU
+  second on Metal). The copy loops counted the 12.4 source origin as `origin << 8` instead of `<< 16` (the steps have 20 fractional bits), so the
+  tiles' 1-pixel source offset (`uv=0x00100010`) started at column 0 while the engine write-back started at 1: the first row and
+  column of every tile stayed black, a grid over the picture. Everything now uses `origin << 16` (`11-pr358`, with the matching
+  edits in `0005` and in the row copy of #334). `0017` adds an optional backend call, `color_target_resolve`, a 1/k downscale on the GPU
   (Metal: one pass with a linear sampler; Vulkan: linear blits), which the engine uses for the tiles when the blit is
   INTERPOLATOR_FOH from a corner origin, as this game's is: fights at 56-60 frames a second. The tile's source starts at the
   guest position, i.e. one texel in (RPCS3 does the same for a corner origin), which puts the picture about 0.75 pixel up and left

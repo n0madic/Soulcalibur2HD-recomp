@@ -19,7 +19,7 @@ RSX draw engine, cellGcm and NV3089: what Soulcalibur II HD's frame needs, and t
 ---
 
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index 9d02f7f..95e6f3f 100644
+index c72ed2ad..9a3b0932 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
 @@ -9,6 +9,7 @@
@@ -146,19 +146,7 @@ index 9d02f7f..95e6f3f 100644
  /* RSX get pointer (IO offset) + one-deep CALL return slot. The FIFO-wrap
   * recycle path teleports these when it resets a ring without a JUMP command. */
  /* Milliseconds on a monotonic clock, for the runtime's own timeouts and rate
-@@ -922,7 +1032,10 @@ static void nv3089_engine_read(u32 in_pitch, u32 out_w, u32 out_h)
- {
-     if (!rsx_draw_engine_enabled() || !out_w || !out_h) return;
-     const u32 u0 = s_nv3089.in_uv & 0xFFFF, v0 = s_nv3089.in_uv >> 16;   /* 12.4 */
--    const u32 sx0 = u0 >> 4, sy0 = v0 >> 4;
-+    /* From where the copy loop in nv3089_blit starts reading, ((u0 << 8) >> 20): with a source offset of one pixel
-+     * (u0 = 0x10, which the 2:1 resolve tiles carry) that is column 0, not 1, and the pixel the loop takes first
-+     * must be among the ones written back from the engine. */
-+    const u32 sx0 = (u32)(((u64)u0 << 8) >> 20), sy0 = (u32)(((u64)v0 << 8) >> 20);
-     const u32 sx1 = (u32)((((u64)u0 << 8) + (u64)(out_w - 1) * s_nv3089.ds_dx) >> 20);
-     const u32 sy1 = (u32)((((u64)v0 << 8) + (u64)(out_h - 1) * s_nv3089.dt_dy) >> 20);
-     if (sx1 < sx0 || sy1 < sy0) return;
-@@ -958,6 +1071,20 @@ static void gcm_row_copy(u32 d, u32 s, u32 n)
+@@ -962,6 +1072,20 @@ static void gcm_row_copy(u32 d, u32 s, u32 n)
      spu_lockline_unlock();
  }
  
@@ -168,7 +156,7 @@ index 9d02f7f..95e6f3f 100644
 +{
 +    if (!rsx_draw_engine_enabled() || !out_h) return;
 +    const u32 v0 = s_nv3089.in_uv >> 16;   /* 12.4 */
-+    const u32 sy1 = (u32)((((u64)v0 << 8) + (u64)(out_h - 1) * s_nv3089.dt_dy) >> 20);
++    const u32 sy1 = (u32)((nv3089_origin(v0) + (u64)(out_h - 1) * s_nv3089.dt_dy) >> 20);
 +    rsx_draw_engine_guest_access((s_nv3089.src_dma != 0xFEED0001u) ? RSX_LOCATION_LOCAL : RSX_LOCATION_MAIN,
 +                                 s_nv3089.in_off, (sy1 + 1u) * in_pitch);
 +    if (y1 > y0)
@@ -179,7 +167,7 @@ index 9d02f7f..95e6f3f 100644
  static void nv3089_blit(void)
  {
      u32 out_w = s_nv3089.out_sz & 0xFFFF, out_h = s_nv3089.out_sz >> 16;
-@@ -973,8 +1100,8 @@ static void nv3089_blit(void)
+@@ -977,8 +1101,8 @@ static void nv3089_blit(void)
            if ((poll++ & 63u) == 0) { FILE* g = fopen(gate, "rb"); open_gate = g != NULL; if (g) fclose(g); }
            if (open_gate) {
                int _sl = (s_nv3089.src_dma != 0xFEED0001u), _dl = (s_gcm2d.dst_dma != 0xFEED0001u);
@@ -190,7 +178,7 @@ index 9d02f7f..95e6f3f 100644
                       s_nv3089.in_sz & 0xFFFF, s_nv3089.in_sz >> 16, s_nv3089.in_uv,
                       s_nv3089.ds_dx, s_nv3089.dt_dy,
                       cellGcmResolveLocated(_sl, s_nv3089.in_off), in_pitch,
-@@ -1033,6 +1160,9 @@ static void nv3089_blit(void)
+@@ -1037,6 +1161,9 @@ static void nv3089_blit(void)
          u32 dst2 = cellGcmResolveLocated(1, s_nv309e.offset);
          u32 u0b = s_nv3089.in_uv & 0xFFFF, v0b = s_nv3089.in_uv >> 16;
          nv3089_engine_read(in_pitch, out_w, out_h);
@@ -200,7 +188,7 @@ index 9d02f7f..95e6f3f 100644
          /* Copy words verbatim through raw pointers rather than vm_read32/
           * vm_write32: this moves ~500k pixels per blit and several blits run per
           * frame, and the two byte swaps would cancel anyway. */
-@@ -1094,6 +1224,10 @@ static void nv3089_blit(void)
+@@ -1098,6 +1225,10 @@ static void nv3089_blit(void)
      u32 cx0 = s_nv3089.clip_pt & 0xFFFF, cy0 = s_nv3089.clip_pt >> 16;
      u32 cx1 = (s_nv3089.clip_sz & 0xFFFF) ? cx0 + (s_nv3089.clip_sz & 0xFFFF) : 0xFFFFFFFFu;
      u32 cy1 = (s_nv3089.clip_sz >> 16)    ? cy0 + (s_nv3089.clip_sz >> 16)    : 0xFFFFFFFFu;
@@ -211,7 +199,7 @@ index 9d02f7f..95e6f3f 100644
      /* Bytes per pixel from the SDK enums (CELL_GCM_TRANSFER_SCALE_FORMAT_*:
       * 7 = R5G6B5, 8 = Y8 -- not 32-bit as they were once labelled). When the
       * destination surface format agrees it is a plain copy of that width; a
-@@ -1102,7 +1236,23 @@ static void nv3089_blit(void)
+@@ -1106,7 +1237,23 @@ static void nv3089_blit(void)
      u32 dbpp = (s_gcm2d.color_fmt == 4u /* R5G6B5 */) ? 2u
               : (s_gcm2d.color_fmt == 1u /* Y8 */)     ? 1u : 4u;
      u32 bpp = (sbpp == dbpp) ? sbpp : 4u;
@@ -235,7 +223,16 @@ index 9d02f7f..95e6f3f 100644
      /* NV3089_ROWCOPY (default 1): an unscaled blit copies a row at a time.
       * The per-pixel loop pays a vm_read32 and a vm_write32 per pixel -- the
       * bounds and null-store checks, the store hooks, a reservation lookup and
-@@ -1147,12 +1297,7 @@ static void nv3089_blit(void)
+@@ -1118,7 +1265,7 @@ static void nv3089_blit(void)
+     if (rowcopy < 0) { const char* e = getenv("NV3089_ROWCOPY"); rowcopy = e ? atoi(e) : 1; }
+     if (rowcopy && s_nv3089.ds_dx == 0x100000u && s_nv3089.dt_dy == 0x100000u) {
+         /* the integer source start the per-pixel loop derives for x = y = 0 */
+-        const u32 sx0 = (u32)(((u64)u0 << 8) >> 20), sy0 = (u32)(((u64)v0 << 8) >> 20);
++        const u32 sx0 = (u32)(nv3089_origin(u0) >> 20), sy0 = (u32)(nv3089_origin(v0) >> 20);
+         u32 xa = 0, xb = out_w;                       /* destination x range inside the clip */
+         if (out_x < cx0) xa = cx0 - out_x;
+         if ((u64)out_x + xb > cx1) xb = cx1 > out_x ? cx1 - out_x : 0;
+@@ -1151,12 +1298,7 @@ static void nv3089_blit(void)
              else               vm_write8(d, vm_read8(s));
          }
      }
@@ -249,7 +246,7 @@ index 9d02f7f..95e6f3f 100644
      { static int _n = 0; static int cap = -1;
        if (cap < 0) { const char* e = getenv("NV3089_DBG"); cap = e ? atoi(e) : 0; }
        if (cap && _n < cap) { _n++;
-@@ -1204,7 +1349,7 @@ static void gcm_2d_method(u32 subch, u32 method, u32 data)
+@@ -1208,7 +1350,7 @@ static void gcm_2d_method(u32 subch, u32 method, u32 data)
           * NV308A, so seeing it identifies the object bound here. */
          if (method == 0x0300) { s_nv309e.fmt = data; s_nv309e.active = 1;
                                  s_nv309e.subch = (int)subch;
@@ -258,7 +255,7 @@ index 9d02f7f..95e6f3f 100644
                  printf("[NV309E] format=0x%08X (log2 %ux%u fmt=0x%X)%c", data,
                         1u << ((data >> 16) & 0xFF), 1u << ((data >> 24) & 0xFF),
                         data & 0xFFFF, 10); }
-@@ -1890,6 +2035,15 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1894,6 +2036,15 @@ static void gcm_rsx_process_fifo_unlocked(void)
          if ((w & 3) == 2) {                    /* CALL: offset | 2 */
              { u32 tgt = w & 0x1FFFFFFCu;
                if (!gcm_io2ea(tgt)) { gcm_fifo_bad_branch("CALL", tgt, w); gcm_fifo_resync_why("unmapped-CALL", &s_fifo_getoff, put); break; }
@@ -274,7 +271,7 @@ index 9d02f7f..95e6f3f 100644
                s_fifo_calloff = s_fifo_getoff + 4;
                s_fifo_getoff  = tgt; }
              continue;
-@@ -2494,7 +2648,7 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
+@@ -2498,7 +2649,7 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
            }
        } }
  
@@ -283,7 +280,7 @@ index 9d02f7f..95e6f3f 100644
          fprintf(stderr, "[FLIP] SetFlipCommand(buf=%u) set=%d\n",
                  bufferId, bufferId < CELL_GCM_MAX_DISPLAY_BUFFER_NUM ? s_display_buffer_set[bufferId] : -1); }
      if (bufferId >= CELL_GCM_MAX_DISPLAY_BUFFER_NUM)
-@@ -2829,7 +2983,7 @@ s32 cellGcmAddressToOffset(u32 address, u32* offset)
+@@ -2833,7 +2984,7 @@ s32 cellGcmAddressToOffset(u32 address, u32* offset)
      printf("[cellGcmSys] WARNING: AddressToOffset failed for 0x%08X\n", address);
      vm_write32(off_ea, 0);
      { static int _d = -1; if (_d < 0) _d = getenv("A2O_FAILDBG") ? 1 : 0;
@@ -293,7 +290,7 @@ index 9d02f7f..95e6f3f 100644
                    address, 10); } }
      return CELL_GCM_ERROR_FAILURE;
 diff --git a/libs/video/rsx_commands.c b/libs/video/rsx_commands.c
-index d8506de..d897141 100644
+index d8506de1..d897141b 100644
 --- a/libs/video/rsx_commands.c
 +++ b/libs/video/rsx_commands.c
 @@ -15,6 +15,7 @@
@@ -314,7 +311,7 @@ index d8506de..d897141 100644
          state->transform_constant_load = data;
          return 0;
 diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
-index 97c320b..3aa7a41 100644
+index 97c320bd..3aa7a41b 100644
 --- a/libs/video/rsx_draw_engine.c
 +++ b/libs/video/rsx_draw_engine.c
 @@ -137,6 +137,21 @@ typedef struct {
@@ -927,7 +924,7 @@ index 97c320b..3aa7a41 100644
  }
  
 diff --git a/libs/video/rsx_draw_engine.h b/libs/video/rsx_draw_engine.h
-index bf652b7..e8cdbf9 100644
+index bf652b71..e8cdbf92 100644
 --- a/libs/video/rsx_draw_engine.h
 +++ b/libs/video/rsx_draw_engine.h
 @@ -231,6 +231,14 @@ typedef struct rsx_draw_backend {
@@ -962,7 +959,7 @@ index bf652b7..e8cdbf9 100644
  /* --- test hooks ---------------------------------------------------------- */
  
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index 99fba64..0e76eaa 100644
+index 99fba647..0e76eaa9 100644
 --- a/runtime/ppu/ppu_loader.cpp
 +++ b/runtime/ppu/ppu_loader.cpp
 @@ -1921,7 +1921,9 @@ void vm_write32(uint64_t a, uint32_t v) { barrier_watch_hit((uint32_t)a, v, 4, _
