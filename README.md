@@ -147,8 +147,18 @@ for Windows' bash). `--no-host-build` skips that and uses `dist/` as it is.
 
 The code in this repository is free software under the **GNU GPL, version 2 or (at your option) any later version**
 ([LICENSE-GPL-2.0.txt](LICENSE-GPL-2.0.txt)). The prebuilt program also contains Apache-2.0 licensed parts, so as a whole it is
-distributed under **GPL version 3 or later** ([LICENSE](LICENSE)). Soulcalibur is a trademark of Bandai Namco Entertainment; this project is not affiliated with or
-endorsed by them. It contains none of their material.
+distributed under **GPL version 3 or later** ([LICENSE](LICENSE)).
+
+## Legal
+
+This repository contains no game data: no game code, executables, assets, textures, models, audio or other material from
+Soulcalibur II HD Online, and nothing from Sony's firmware. Only the recompilation tooling, the host runtime and the patches are
+here. You need your own legally obtained copy of the game, and everything translated from it stays on your computer.
+
+Soulcalibur II HD Online, its characters, artwork, music and all related intellectual property belong to **Namco** (Bandai Namco
+Entertainment Inc.), and all rights to the game remain with them. *Soulcalibur* and *Namco* are trademarks of their respective
+owners. This project is an independent, non-commercial effort and is not affiliated with, authorized by or endorsed by Namco, Bandai
+Namco Entertainment or Sony Interactive Entertainment. The GPL license above covers only the code in this repository, not the game.
 
 ## Credits
 
