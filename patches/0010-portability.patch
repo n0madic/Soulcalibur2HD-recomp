@@ -14,7 +14,7 @@ Module access and portability: separate game module, optional LGPL decoder, MinG
 ---
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index f1ba5a9..ea9fdd9 100644
+index a38bcea..795230f 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -76,9 +76,16 @@ endif()

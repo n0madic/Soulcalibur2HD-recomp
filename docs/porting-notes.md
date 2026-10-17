@@ -16,6 +16,24 @@ in order to a fresh clone by `scripts/build_host.sh` (one patch per area, each w
 - Game data: the runtime cannot decrypt licensed EDATs, so `sc2hd install` (`install.cpp`) decrypts them under their own names
   (`ROOT.EDAT`, `UPDATE.EDAT`) and `EBOOT.BIN` into `EBOOT.elf` when it unpacks the packages.
 
+## Open toolkit pull requests, imported as diffs
+`patches/upstream/` holds pull requests of the toolkit that are not merged yet, each file as the PR's own diff (header: PR number, author,
+head commit), applied before `patches/`. Where one of this port's patches overlapped a PR, the PR's code was kept and the patch reworked on
+top of it. When a PR is merged into the pinned revision its file is deleted.
+
+| File | PR | What it brings the port |
+|---|---|---|
+| `01-pr326` | #326 | guest spinlocks are 32-bit on LP64 hosts (arm64 alignment faults) |
+| `02-pr327` | #327 | bounded semaphore acquire, the stuck-get watchdog leaves FIFO waits alone |
+| `03-pr333` | #333 | `PS3_LANG` chooses the system language |
+| `04-pr334` | #334 | an unscaled NV3089 blit copies a row at a time |
+| `05-pr338` | #338 | `PS3_GAMEDATA_ROOT` (the launcher sets it; saves stay under `PS3_HDD0_ROOT`, `patches/0001`) |
+| `06-pr340` | #340 | a task's `signalled` bit is updated atomically against SPU commits |
+| `07-pr343` | #343 | a queued flip waits for its label and completes when the RSX reaches it |
+| `08-pr347` | #347 | `get` follows the walker across a JUMP |
+| `09-pr348` | #348 | the engine converts a transfer's rows a pixel at a time |
+| `10-pr349` | #349 | `CELL_FS_O_*` values, so `O_CREAT` creates |
+
 ## Patches
 | Patch | Area |
 |---|---|

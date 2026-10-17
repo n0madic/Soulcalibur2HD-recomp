@@ -931,7 +931,7 @@ index 5805cdb..21384ba 100644
  
  /* How the thread stopped, in the terms the group state machine needs. */
 diff --git a/runtime/spu/spu_workload.c b/runtime/spu/spu_workload.c
-index 1cdfe48..ec665fa 100644
+index ff2e0f7..025100e 100644
 --- a/runtime/spu/spu_workload.c
 +++ b/runtime/spu/spu_workload.c
 @@ -6,6 +6,7 @@
@@ -1104,19 +1104,19 @@ index 1cdfe48..ec665fa 100644
  }
  
  /* Event bits owed to a task, keyed by the OBJECT it waits on (flag - 0x80).
-@@ -1006,18 +1099,11 @@ int spu_taskset_signal_parked_obj(uint32_t taskset_ea, uint32_t wait_obj)
+@@ -1037,18 +1130,11 @@ static void spu_signalled_update(uint32_t taskset_ea, uint32_t taskId, int set)
  void spu_taskset_signal_task(uint32_t taskset_ea, uint32_t taskId)
  {
      if (!taskset_ea || taskId >= 128) return;
 -#ifdef _WIN32
 -    AcquireSRWLockExclusive(&s_sig_lock);
 +    sig_lock();
-     spurs_bitset_set(taskset_ea + CSTS_SIGNALLED, taskId);
+     spu_signalled_update(taskset_ea, taskId, 1);
 -    WakeAllConditionVariable(&s_sig_cv);
 -    ReleaseSRWLockExclusive(&s_sig_lock);
 -#else
 -    pthread_mutex_lock(&s_sig_lock);
--    spurs_bitset_set(taskset_ea + CSTS_SIGNALLED, taskId);
+-    spu_signalled_update(taskset_ea, taskId, 1);
 -    pthread_cond_broadcast(&s_sig_cv);
 -    pthread_mutex_unlock(&s_sig_lock);
 -#endif
@@ -1127,7 +1127,7 @@ index 1cdfe48..ec665fa 100644
          fprintf(stderr, "[spu_workload] signal task %u (taskset 0x%08X)\n",
                  taskId, taskset_ea); fflush(stderr); }
      /* SPU_SIG_STATS=1: signals per second per (taskset, task, caller). */
-@@ -1060,22 +1146,50 @@ void spu_taskset_line_committed(uint32_t line)
+@@ -1091,22 +1177,50 @@ void spu_taskset_line_committed(uint32_t line)
      for (int i = 0; i < SPU_PARKED_MAX; i++) {
          const uint64_t k = s_parked[i];
          if (!k || (((uint32_t)(k >> 32) + CSTS_SIGNALLED) & ~127u) != line) continue;
@@ -1188,7 +1188,7 @@ index 1cdfe48..ec665fa 100644
  int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
  {
      if (!taskset_ea || taskId >= 128) return 0;
-@@ -1085,7 +1199,7 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
+@@ -1116,7 +1230,7 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
      static _Thread_local unsigned long long s_wait_exit_ms;
      { extern unsigned long long ps3_ms_now(void);
        unsigned long long _now = ps3_ms_now();
@@ -1197,7 +1197,7 @@ index 1cdfe48..ec665fa 100644
          fprintf(stderr, "[spu_workload] WAIT_SIGNAL#%d enter task=%u taskset=0x%08X ran=%llums\n",
                  _n, taskId, taskset_ea,
                  s_wait_exit_ms ? (_now - s_wait_exit_ms) : 0ull); }
-@@ -1132,24 +1246,11 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
+@@ -1163,24 +1277,11 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
      /* Release the global SPU-serial lock while parked so another SPU task can
       * run (and possibly signal us); re-acquired before returning to resume. */
      spu_serial_release();
@@ -1212,7 +1212,7 @@ index 1cdfe48..ec665fa 100644
 -            if (drain && secs >= drain) { drained = 1; break; }
 -        }
 -    }
--    if (!drained) spurs_bitset_clear(taskset_ea + CSTS_SIGNALLED, taskId);
+-    if (!drained) spu_signalled_update(taskset_ea, taskId, 0);
 -    ReleaseSRWLockExclusive(&s_sig_lock);
 -#else
 -    pthread_mutex_lock(&s_sig_lock);
@@ -1227,14 +1227,14 @@ index 1cdfe48..ec665fa 100644
              static int _n = 0;
              if (++secs && _n < 16) { _n++;
                  fprintf(stderr, "[spu_workload] task %u (taskset 0x%08X) sleeping "
-@@ -1157,16 +1258,15 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
+@@ -1188,16 +1289,15 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
              if (drain && secs >= drain) { drained = 1; break; }
          }
      }
--    if (!drained) spurs_bitset_clear(taskset_ea + CSTS_SIGNALLED, taskId);
+-    if (!drained) spu_signalled_update(taskset_ea, taskId, 0);
 -    pthread_mutex_unlock(&s_sig_lock);
 -#endif
-+    if (!drained && !spu_task_is_stale()) spurs_bitset_clear(taskset_ea + CSTS_SIGNALLED, taskId);
++    if (!drained && !spu_task_is_stale()) spu_signalled_update(taskset_ea, taskId, 0);
 +    sig_unlock();
      if (drained) { static int _d = 0; if (_d++ < 24)
          fprintf(stderr, "[spu_workload] task %u (taskset 0x%08X) WS_DRAIN resume "
@@ -1247,7 +1247,7 @@ index 1cdfe48..ec665fa 100644
  }
  
  int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
-@@ -1215,7 +1315,8 @@ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
+@@ -1246,7 +1346,8 @@ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
       * the next CreateTask overwriting the single-slot globals -- with two audio
       * tasks that made both run task 1's descriptor. */
      { extern uint32_t g_ydkj_real_taskset_ea, g_ydkj_real_taskid;

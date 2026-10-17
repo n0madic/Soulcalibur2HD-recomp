@@ -8,10 +8,10 @@ cellSaveData: SC2HD_UNLOCK sets flags of the game's save data in memory only.
 ---
 
 diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
-index 754cb1c..04247c1 100644
+index bb6b18e..e79faee 100644
 --- a/libs/system/cellSaveData.c
 +++ b/libs/system/cellSaveData.c
-@@ -659,6 +659,50 @@ static u32 enumerate_save_files(const char* save_path,
+@@ -672,6 +672,50 @@ static u32 enumerate_save_files(const char* save_path,
      return count;
  }
  
@@ -62,7 +62,7 @@ index 754cb1c..04247c1 100644
  /* Execute file callback: read/write/delete files in the save directory */
  static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
  {
-@@ -704,12 +748,37 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
+@@ -717,12 +761,37 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
          size_t got = fread(set->fileBuf, 1, read_size, fp);
          int failed = ferror(fp);
          if (fclose(fp) != 0) failed = 1;
@@ -100,7 +100,7 @@ index 754cb1c..04247c1 100644
          const char* mode;
          if (set->fileOperation == CELL_SAVEDATA_FILEOP_WRITE && set->fileOffset == 0) {
              mode = "wb";
-@@ -722,6 +791,7 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
+@@ -735,6 +804,7 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
          }
          if (!fp) {
              printf("[cellSaveData] file write: cannot open '%s'\n", file_path);
@@ -108,7 +108,7 @@ index 754cb1c..04247c1 100644
              return CELL_SAVEDATA_ERROR_ACCESS_ERROR;
          }
          if (set->fileOffset > 0) {
-@@ -731,9 +801,8 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
+@@ -744,9 +814,8 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
              fseeko(fp, (off_t)set->fileOffset, SEEK_SET);
  #endif
          }

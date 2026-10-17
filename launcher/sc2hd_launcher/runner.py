@@ -28,6 +28,9 @@ def layout(run: Path, files: GameFiles, python: str) -> dict[str, str]:
     return {
         "PS3_PARAM_SFO": str(run / "PARAM.SFO"),
         "PS3_HDD0_ROOT": str(files.hdd0),
+        # Where the trophies go (and where saves would, were PS3_HDD0_ROOT not set): beside hdd0, not into whatever
+        # directory the game was started from.
+        "PS3_GAMEDATA_ROOT": str(files.hdd0.parent / "gamedata"),
         "PS3_VFS_ROOT": str(run),
         "PS3_TITLE": "Soulcalibur II HD",
         "PS3_DEV_FLASH": str(stubs),

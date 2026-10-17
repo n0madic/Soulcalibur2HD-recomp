@@ -16,7 +16,7 @@ Vulkan RSX backend on Windows, and its engine path batched.
 ---
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 6696418..f1ba5a9 100644
+index ba29859..a38bcea 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -47,11 +47,11 @@ list(FILTER HLE_SOURCES EXCLUDE REGEX "/tests/")

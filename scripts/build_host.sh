@@ -55,12 +55,15 @@ git -C "$TOOLKIT" config core.autocrlf false
 # The patches are applied to a clean checkout, once per change of the revision or of the patches: they overlap, so a
 # patch cannot be tested for "already applied" one by one. A stamp inside .git records what the tree was built from.
 PATCH_STAMP="$TOOLKIT/.git/sc2hd-patches"
-PATCH_ID="$TOOLKIT_REV $(cat "$ROOT"/patches/*.patch | git hash-object --stdin)"
+# patches/upstream/ holds open pull requests of the toolkit, imported as they are (each file names its PR and head
+# commit); they go on first and are dropped once the pinned revision contains them. patches/ is this port's own.
+PATCHES=("$ROOT"/patches/upstream/*.patch "$ROOT"/patches/*.patch)
+PATCH_ID="$TOOLKIT_REV $(cat "${PATCHES[@]}" | git hash-object --stdin)"
 if [[ "$(cat "$PATCH_STAMP" 2>/dev/null)" != "$PATCH_ID" ]]; then
   git -C "$TOOLKIT" checkout -q -f "$TOOLKIT_REV"
   git -C "$TOOLKIT" clean -fdq
   rm -f "$PATCH_STAMP"
-  for p in "$ROOT"/patches/*.patch; do
+  for p in "${PATCHES[@]}"; do
     git -C "$TOOLKIT" apply "$p" || { echo "patch does not apply: $p" >&2; exit 1; }
   done
   echo "$PATCH_ID" > "$PATCH_STAMP"

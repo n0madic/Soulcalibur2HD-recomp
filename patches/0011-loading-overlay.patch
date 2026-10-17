@@ -7,7 +7,7 @@ Boot "Loading..." overlay: the window is black for the first seconds of a title.
 - The D3D12 backend does not run the draw engine and has no overlay.
 
 diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
-index 782641c..62c00d6 100644
+index 3aa7a41..37e56c3 100644
 --- a/libs/video/rsx_draw_engine.c
 +++ b/libs/video/rsx_draw_engine.c
 @@ -176,6 +176,7 @@ static struct {
@@ -18,7 +18,7 @@ index 782641c..62c00d6 100644
      u32 last_present_surface;
      u32 last_flip_buffer;
      u64 write_serial;       /* orders colour and depth writes to one address */
-@@ -2863,11 +2864,44 @@ static u32 eng_present_surface(u32 buffer_id)
+@@ -2865,11 +2866,44 @@ static u32 eng_present_surface(u32 buffer_id)
      return eng_current_surface();
  }
  
@@ -63,7 +63,7 @@ index 782641c..62c00d6 100644
      if (getenv("PS3RECOMP_METAL_FRAME_DUMP") && g.frames % 120 == 0) {
          u32 current = eng_current_surface();
          fprintf(stderr, "[rsx capture] frame=%u buffer=%u selected=%u current=%u draws=%u surfaces=%u\n",
-@@ -2946,6 +2980,10 @@ int rsx_draw_engine_init(u32 width, u32 height)
+@@ -2948,6 +2982,10 @@ int rsx_draw_engine_init(u32 width, u32 height)
      sink.flip             = sink_flip;
      rsx_dispatch_init(&g.rsx, &sink);
      g.ready = 1;

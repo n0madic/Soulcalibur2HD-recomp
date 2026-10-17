@@ -134,46 +134,29 @@ index 632e646..63d3be5 100644
  #define CELL_MSGDIALOG_BUTTON_YES      1
  #define CELL_MSGDIALOG_BUTTON_NO       2
 diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
-index 43c05d6..754cb1c 100644
+index 286bf47..bb6b18e 100644
 --- a/libs/system/cellSaveData.c
 +++ b/libs/system/cellSaveData.c
-@@ -53,6 +53,20 @@
- 
- static char s_save_root[1024] = "./gamedata/dev_hdd0/home/00000001/savedata";
- 
-+/* PS3_HDD0_ROOT, when set, is the host directory /dev_hdd0 maps to; keep the saves under it
-+ * rather than in whatever directory the process happened to start in. */
-+static const char* save_root(void)
-+{
-+    static int init;
-+    if (!init) {
-+        init = 1;
-+        const char* hdd0 = getenv("PS3_HDD0_ROOT");
-+        if (hdd0 && *hdd0)
-+            snprintf(s_save_root, sizeof s_save_root, "%s/home/00000001/savedata", hdd0);
-+    }
-+    return s_save_root;
+@@ -64,6 +64,18 @@ static void adopt_gamedata_root(void)
+     const char* env = getenv("PS3_GAMEDATA_ROOT");
+     if (env && *env)
+         snprintf(s_save_root, sizeof(s_save_root), "%s/dev_hdd0/home/00000001/savedata", env);
++    /* PS3_HDD0_ROOT, when set, is the host directory /dev_hdd0 maps to: the saves live under it, which keeps
++     * them where a port that maps /dev_hdd0 already had them. It wins over PS3_GAMEDATA_ROOT for the saves; the
++     * trophies still follow PS3_GAMEDATA_ROOT. */
++    const char* hdd0 = getenv("PS3_HDD0_ROOT");
++    if (hdd0 && *hdd0)
++        snprintf(s_save_root, sizeof(s_save_root), "%s/home/00000001/savedata", hdd0);
 +}
 +
++static const char* save_root(void)
++{
++    adopt_gamedata_root();
++    return s_save_root;
+ }
+ 
  /* Ensure directory (and parents) exist */
- static void ensure_dirs(const char* path)
- {
-@@ -73,7 +87,7 @@ static void ensure_dirs(const char* path)
- 
- static void build_save_path(char* buf, size_t buf_size, const char* dirName)
- {
--    snprintf(buf, buf_size, "%s/%s", s_save_root, dirName);
-+    snprintf(buf, buf_size, "%s/%s", save_root(), dirName);
- #ifdef _WIN32
-     for (char* p = buf; *p; p++) {
-         if (*p == '/') *p = '\\';
-@@ -437,12 +451,12 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
- {
-     u32 count = 0;
- 
--    ensure_dirs(s_save_root);
-+    ensure_dirs(save_root());
- 
+@@ -457,7 +469,7 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
  #ifdef _WIN32
      {
          char search[1024];
@@ -182,7 +165,7 @@ index 43c05d6..754cb1c 100644
          for (char* p = search; *p; p++) {
              if (*p == '/') *p = '\\';
          }
-@@ -471,7 +485,7 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
+@@ -486,7 +498,7 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
      }
  #else
      {
@@ -191,7 +174,7 @@ index 43c05d6..754cb1c 100644
          if (!dp)
              return 0;
  
-@@ -481,7 +495,7 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
+@@ -496,7 +508,7 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
                  continue;
              /* Check it's a directory */
              char full[1024];
@@ -200,7 +183,131 @@ index 43c05d6..754cb1c 100644
              if (!dir_exists(full))
                  continue;
              if (prefix && prefix[0] && strncmp(de->d_name, prefix, strlen(prefix)) != 0)
-@@ -1155,7 +1169,7 @@ static s32 savedata_fixed(int is_save, CellSaveDataSetList* setList,
+@@ -531,50 +543,50 @@ static u32 savedata_content_type(const char* name)
+     return CELL_SAVEDATA_FILETYPE_NORMALFILE;
+ }
+ 
+-/* Which files were written as SECUREFILE. A real save records them in
+- * PARAM.PFD; ours keeps one name per line there, and the file stays hidden
+- * from the guest's list (savedata_system_file). Without it every file came
+- * back as NORMALFILE, and a title that looks for its secure payload in the
+- * stat list (The Simpsons Arcade Game) called its own fresh save corrupt. */
+-static void pfd_path(const char* save_path, char* out, size_t n)
+-{
+-    snprintf(out, n, "%s/PARAM.PFD", save_path);
+-#ifdef _WIN32
+-    for (char* p = out; *p; p++) if (*p == '/') *p = '\\';
+-#endif
+-}
+-
+-static int pfd_has(const char* save_path, const char* name)
+-{
+-    char path[1024], line[64];
+-    pfd_path(save_path, path, sizeof(path));
+-    FILE* fp = fopen(path, "rb");
+-    if (!fp) return 0;
+-    int found = 0;
+-    while (!found && fgets(line, sizeof(line), fp)) {
+-        line[strcspn(line, "\r\n")] = 0;
+-        found = !strcmp(line, name);
+-    }
+-    fclose(fp);
+-    return found;
+-}
+-
+-static void pfd_add(const char* save_path, const char* name)
+-{
+-    if (pfd_has(save_path, name)) return;
+-    char path[1024];
+-    pfd_path(save_path, path, sizeof(path));
+-    FILE* fp = fopen(path, "ab");
+-    if (fp) { fprintf(fp, "%s\n", name); fclose(fp); }
+-}
+-
+-static u32 savedata_file_type(const char* save_path, const char* name)
+-{
+-    u32 t = savedata_content_type(name);
+-    return t == CELL_SAVEDATA_FILETYPE_NORMALFILE && pfd_has(save_path, name)
+-         ? CELL_SAVEDATA_FILETYPE_SECUREFILE : t;
+-}
+-
++/* Which files were written as SECUREFILE. A real save records them in
++ * PARAM.PFD; ours keeps one name per line there, and the file stays hidden
++ * from the guest's list (savedata_system_file). Without it every file came
++ * back as NORMALFILE, and a title that looks for its secure payload in the
++ * stat list (The Simpsons Arcade Game) called its own fresh save corrupt. */
++static void pfd_path(const char* save_path, char* out, size_t n)
++{
++    snprintf(out, n, "%s/PARAM.PFD", save_path);
++#ifdef _WIN32
++    for (char* p = out; *p; p++) if (*p == '/') *p = '\\';
++#endif
++}
++
++static int pfd_has(const char* save_path, const char* name)
++{
++    char path[1024], line[64];
++    pfd_path(save_path, path, sizeof(path));
++    FILE* fp = fopen(path, "rb");
++    if (!fp) return 0;
++    int found = 0;
++    while (!found && fgets(line, sizeof(line), fp)) {
++        line[strcspn(line, "\r\n")] = 0;
++        found = !strcmp(line, name);
++    }
++    fclose(fp);
++    return found;
++}
++
++static void pfd_add(const char* save_path, const char* name)
++{
++    if (pfd_has(save_path, name)) return;
++    char path[1024];
++    pfd_path(save_path, path, sizeof(path));
++    FILE* fp = fopen(path, "ab");
++    if (fp) { fprintf(fp, "%s\n", name); fclose(fp); }
++}
++
++static u32 savedata_file_type(const char* save_path, const char* name)
++{
++    u32 t = savedata_content_type(name);
++    return t == CELL_SAVEDATA_FILETYPE_NORMALFILE && pfd_has(save_path, name)
++         ? CELL_SAVEDATA_FILETYPE_SECUREFILE : t;
++}
++
+ /* Enumerate files in a save directory. Returns count, fills fileList up to max. */
+ static u32 enumerate_save_files(const char* save_path,
+                                  CellSaveDataFileStat* fileList, u32 max)
+@@ -595,7 +607,7 @@ static u32 enumerate_save_files(const char* save_path,
+                 continue;
+             if (count < max && fileList) {
+                 memset(&fileList[count], 0, sizeof(CellSaveDataFileStat));
+-                fileList[count].fileType = savedata_file_type(save_path, fd.cFileName);
++                fileList[count].fileType = savedata_file_type(save_path, fd.cFileName);
+                 strncpy(fileList[count].fileName, fd.cFileName,
+                         CELL_SAVEDATA_FILENAME_SIZE - 1);
+                 ULARGE_INTEGER sz;
+@@ -632,7 +644,7 @@ static u32 enumerate_save_files(const char* save_path,
+ #endif
+             if (count < max && fileList) {
+                 memset(&fileList[count], 0, sizeof(CellSaveDataFileStat));
+-                fileList[count].fileType = savedata_file_type(save_path, de->d_name);
++                fileList[count].fileType = savedata_file_type(save_path, de->d_name);
+                 strncpy(fileList[count].fileName, de->d_name,
+                         CELL_SAVEDATA_FILENAME_SIZE - 1);
+                 fileList[count].st_size = (u64)st.st_size;
+@@ -737,8 +749,8 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
+         size_t wrote = fwrite(set->fileBuf, 1, write_size, fp);
+         int failed = wrote != write_size;
+         if (fclose(fp) != 0) failed = 1;
+-        if (!failed && set->fileType == CELL_SAVEDATA_FILETYPE_SECUREFILE)
+-            pfd_add(save_path, name);
++        if (!failed && set->fileType == CELL_SAVEDATA_FILETYPE_SECUREFILE)
++            pfd_add(save_path, name);
+         return failed ? CELL_SAVEDATA_ERROR_ACCESS_ERROR : (s32)wrote;
+     }
+ 
+@@ -1170,7 +1182,7 @@ static s32 savedata_fixed(int is_save, CellSaveDataSetList* setList,
          }
          printf("[cellSaveData] savedata_fixed: cbresult=%d listed=%u/%u prefix='%s' root='%s'\n",
                 result, listed, count,
@@ -209,7 +316,7 @@ index 43c05d6..754cb1c 100644
          SAVEDATA_REJECT(CELL_SAVEDATA_ERROR_CBRESULT, w);
      }
      if (!funcStat)
-@@ -1214,6 +1228,20 @@ s32 cellSaveDataListAutoLoad(u32 version, u32 errDialog,
+@@ -1229,6 +1241,20 @@ s32 cellSaveDataListAutoLoad(u32 version, u32 errDialog,
      return savedata_fixed(0, setList, setBuf, funcFixed, funcStat, funcFile, userdata);
  }
  
@@ -230,7 +337,7 @@ index 43c05d6..754cb1c 100644
  s32 cellSaveDataAutoSave2(u32 version, const char* dirName,
                             u32 errDialog,
                             CellSaveDataSetBuf* setBuf,
-@@ -1281,7 +1309,7 @@ s32 cellSaveDataAutoLoad2(u32 version, const char* dirName,
+@@ -1296,7 +1322,7 @@ s32 cellSaveDataAutoLoad2(u32 version, const char* dirName,
       * compat return until that is understood -- it was dropped once already
       * in the fold merge and cost a boot regression. */
      s32 r = savedata_execute(dirName, 0, setBuf, funcStat, funcFile, userdata);
@@ -239,7 +346,7 @@ index 43c05d6..754cb1c 100644
  }
  
  s32 cellSaveDataDelete2(u32 container)
-@@ -1407,7 +1435,7 @@ s32 cellSaveDataAutoLoad(u32 version, const char* dirName,
+@@ -1422,7 +1448,7 @@ s32 cellSaveDataAutoLoad(u32 version, const char* dirName,
      /* Same as cellSaveDataAutoLoad2 above, including flОw's first-boot compat
       * return (it calls this old non-_2 variant). */
      s32 r = savedata_execute(dirName, 0, setBuf, funcStat, funcFile, userdata);
@@ -249,10 +356,10 @@ index 43c05d6..754cb1c 100644
  
  s32 cellSaveDataDelete(u32 version, const char* dirName,
 diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
-index 7f1ffc9..24f752d 100644
+index 9b7f790..3952f98 100644
 --- a/runtime/ppu/ppu_fs.cpp
 +++ b/runtime/ppu/ppu_fs.cpp
-@@ -115,6 +115,7 @@ static void guest_strcpy(char* dst, uint32_t gaddr, size_t cap)
+@@ -123,6 +123,7 @@ static void guest_strcpy(char* dst, uint32_t gaddr, size_t cap)
  /* Defined in runtime/syscalls/sys_fs.c -- shared by all three path
   * translators. (extern "C" is ill-formed at block scope.) */
  extern "C" void ps3_vfs_ps3game_fallback(char* path, size_t cap);
@@ -260,7 +367,7 @@ index 7f1ffc9..24f752d 100644
  
  /* Translate a guest path to a host path under ppu_vfs_root. Known PS3 mount
   * prefixes are stripped; the rest is appended to the root. */
-@@ -142,7 +143,7 @@ static void host_path(char* out, size_t cap, const char* guest)
+@@ -150,7 +151,7 @@ static void host_path(char* out, size_t cap, const char* guest)
      if (strncmp(guest, "/dev_flash/", 11) == 0) {
          const char* fw = getenv("PS3_DEV_FLASH");
          if (!fw || !*fw) fw = "D:/recomp/tools/rpcs3/dev_flash";
