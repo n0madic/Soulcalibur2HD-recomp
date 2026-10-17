@@ -8,6 +8,7 @@ ends at the program's end bit, as the Metal backend's does, and the cache holds 
 Also: saturating log counters in rsx_d3d12_backend.c.
 
 ---
+
 diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
 index d629f72..294a3aa 100644
 --- a/libs/video/rsx_d3d12_backend.c

@@ -6,11 +6,12 @@ Metal fullscreen: start in fullscreen on request, Ctrl+Cmd+F toggles it.
   button does the same). The Vulkan backend reads the same variable and has F11 / Alt+Enter (0013).
 
 ---
+
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index 9975f41..fa5337c 100644
+index c535bf3..dec1669 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
-@@ -496,6 +496,11 @@ static int create_window_impl(const char* title)
+@@ -615,6 +615,11 @@ static int create_window_impl(const char* title)
          NSString* quitTitle = [@"Quit " stringByAppendingString:[NSString stringWithUTF8String:(title ? title : "ps3recomp")]];
          NSMenuItem* quit = [[NSMenuItem alloc] initWithTitle:quitTitle action:@selector(quit:) keyEquivalent:@"q"];
          [quit setTarget:s_quit_target];
@@ -22,13 +23,14 @@ index 9975f41..fa5337c 100644
          [appMenu addItem:quit];
          [appItem setSubmenu:appMenu];
          [NSApp setMainMenu:bar];
-@@ -530,8 +535,14 @@ static int create_window_impl(const char* title)
+@@ -650,9 +655,15 @@ static int create_window_impl(const char* title)
      [view setWantsLayer:YES];
      [view setLayer:s_layer];
  
 +    [s_window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
      [s_window makeKeyAndOrderFront:nil];
      [NSApp activateIgnoringOtherApps:YES];
+     fps_start();
 +    /* PS3RECOMP_FULLSCREEN=1 (--fullscreen), the same for every backend: start in fullscreen; the picture is letterboxed as in a window. */
 +    {
 +        const char* fs = getenv("PS3RECOMP_FULLSCREEN");

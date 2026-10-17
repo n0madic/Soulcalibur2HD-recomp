@@ -46,7 +46,9 @@ class LiftResult:
 
 
 def _tool(python: str, script: Path, *args: str | Path) -> None:
-    cmd = [python, "-I", str(script), *map(str, args)]
+    # -E -s rather than -I: the toolkit's tools import their siblings (spu_elf), which needs the script's own directory
+    # (the SDK's tools/) on sys.path, and -I drops it. The game's files are arguments, never a directory Python searches.
+    cmd = [python, "-E", "-s", str(script), *map(str, args)]
     LOG.debug("%s", " ".join(cmd))
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:

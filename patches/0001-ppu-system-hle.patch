@@ -16,6 +16,7 @@ PPU runtime and system-library HLE fixes Soulcalibur II HD needs.
 - Log counters in cellFs, ppu_hle and ppu_loader use it (as do the other patches).
 
 ---
+
 diff --git a/include/ps3emu/log_first.h b/include/ps3emu/log_first.h
 new file mode 100644
 index 0000000..73cba23
@@ -36,7 +37,7 @@ index 0000000..73cba23
 +
 +#endif /* PS3RECOMP_LOG_FIRST_H */
 diff --git a/libs/filesystem/cellFs.c b/libs/filesystem/cellFs.c
-index 5166a47..c8ae8bd 100644
+index 942ea51..9cbf223 100644
 --- a/libs/filesystem/cellFs.c
 +++ b/libs/filesystem/cellFs.c
 @@ -6,6 +6,7 @@
@@ -47,7 +48,7 @@ index 5166a47..c8ae8bd 100644
  #include "../../runtime/platform/win32_backtrace.h"   /* RtlCaptureStackBackTrace / GetModuleHandleA on POSIX */
  #include "ps3emu/endian.h"
  #include <stdio.h>
-@@ -500,7 +501,7 @@ s32 cellFsRead(CellFsFd fd, void* buf, u64 nbytes, u64* nread)
+@@ -530,7 +531,7 @@ s32 cellFsRead(CellFsFd fd, void* buf, u64 nbytes, u64* nread)
      }
  
      { static int _n = 0;
@@ -133,10 +134,10 @@ index 632e646..63d3be5 100644
  #define CELL_MSGDIALOG_BUTTON_YES      1
  #define CELL_MSGDIALOG_BUTTON_NO       2
 diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
-index 79ea8ca..85907c3 100644
+index 43c05d6..754cb1c 100644
 --- a/libs/system/cellSaveData.c
 +++ b/libs/system/cellSaveData.c
-@@ -52,6 +52,20 @@
+@@ -53,6 +53,20 @@
  
  static char s_save_root[1024] = "./gamedata/dev_hdd0/home/00000001/savedata";
  
@@ -157,7 +158,7 @@ index 79ea8ca..85907c3 100644
  /* Ensure directory (and parents) exist */
  static void ensure_dirs(const char* path)
  {
-@@ -72,7 +86,7 @@ static void ensure_dirs(const char* path)
+@@ -73,7 +87,7 @@ static void ensure_dirs(const char* path)
  
  static void build_save_path(char* buf, size_t buf_size, const char* dirName)
  {
@@ -166,7 +167,7 @@ index 79ea8ca..85907c3 100644
  #ifdef _WIN32
      for (char* p = buf; *p; p++) {
          if (*p == '/') *p = '\\';
-@@ -436,12 +450,12 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
+@@ -437,12 +451,12 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
  {
      u32 count = 0;
  
@@ -181,7 +182,7 @@ index 79ea8ca..85907c3 100644
          for (char* p = search; *p; p++) {
              if (*p == '/') *p = '\\';
          }
-@@ -470,7 +484,7 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
+@@ -471,7 +485,7 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
      }
  #else
      {
@@ -190,7 +191,7 @@ index 79ea8ca..85907c3 100644
          if (!dp)
              return 0;
  
-@@ -480,7 +494,7 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
+@@ -481,7 +495,7 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
                  continue;
              /* Check it's a directory */
              char full[1024];
@@ -199,7 +200,7 @@ index 79ea8ca..85907c3 100644
              if (!dir_exists(full))
                  continue;
              if (prefix && prefix[0] && strncmp(de->d_name, prefix, strlen(prefix)) != 0)
-@@ -1128,7 +1142,7 @@ static s32 savedata_fixed(int is_save, CellSaveDataSetList* setList,
+@@ -1155,7 +1169,7 @@ static s32 savedata_fixed(int is_save, CellSaveDataSetList* setList,
          }
          printf("[cellSaveData] savedata_fixed: cbresult=%d listed=%u/%u prefix='%s' root='%s'\n",
                 result, listed, count,
@@ -208,7 +209,7 @@ index 79ea8ca..85907c3 100644
          SAVEDATA_REJECT(CELL_SAVEDATA_ERROR_CBRESULT, w);
      }
      if (!funcStat)
-@@ -1187,6 +1201,20 @@ s32 cellSaveDataListAutoLoad(u32 version, u32 errDialog,
+@@ -1214,6 +1228,20 @@ s32 cellSaveDataListAutoLoad(u32 version, u32 errDialog,
      return savedata_fixed(0, setList, setBuf, funcFixed, funcStat, funcFile, userdata);
  }
  
@@ -229,7 +230,7 @@ index 79ea8ca..85907c3 100644
  s32 cellSaveDataAutoSave2(u32 version, const char* dirName,
                             u32 errDialog,
                             CellSaveDataSetBuf* setBuf,
-@@ -1254,7 +1282,7 @@ s32 cellSaveDataAutoLoad2(u32 version, const char* dirName,
+@@ -1281,7 +1309,7 @@ s32 cellSaveDataAutoLoad2(u32 version, const char* dirName,
       * compat return until that is understood -- it was dropped once already
       * in the fold merge and cost a boot regression. */
      s32 r = savedata_execute(dirName, 0, setBuf, funcStat, funcFile, userdata);
@@ -238,7 +239,7 @@ index 79ea8ca..85907c3 100644
  }
  
  s32 cellSaveDataDelete2(u32 container)
-@@ -1380,7 +1408,7 @@ s32 cellSaveDataAutoLoad(u32 version, const char* dirName,
+@@ -1407,7 +1435,7 @@ s32 cellSaveDataAutoLoad(u32 version, const char* dirName,
      /* Same as cellSaveDataAutoLoad2 above, including flОw's first-boot compat
       * return (it calls this old non-_2 variant). */
      s32 r = savedata_execute(dirName, 0, setBuf, funcStat, funcFile, userdata);
@@ -248,10 +249,10 @@ index 79ea8ca..85907c3 100644
  
  s32 cellSaveDataDelete(u32 version, const char* dirName,
 diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
-index e8f6c2b..a84ce62 100644
+index 7f1ffc9..24f752d 100644
 --- a/runtime/ppu/ppu_fs.cpp
 +++ b/runtime/ppu/ppu_fs.cpp
-@@ -84,6 +84,7 @@ static void guest_strcpy(char* dst, uint32_t gaddr, size_t cap)
+@@ -115,6 +115,7 @@ static void guest_strcpy(char* dst, uint32_t gaddr, size_t cap)
  /* Defined in runtime/syscalls/sys_fs.c -- shared by all three path
   * translators. (extern "C" is ill-formed at block scope.) */
  extern "C" void ps3_vfs_ps3game_fallback(char* path, size_t cap);
@@ -259,7 +260,7 @@ index e8f6c2b..a84ce62 100644
  
  /* Translate a guest path to a host path under ppu_vfs_root. Known PS3 mount
   * prefixes are stripped; the rest is appended to the root. */
-@@ -111,7 +112,7 @@ static void host_path(char* out, size_t cap, const char* guest)
+@@ -142,7 +143,7 @@ static void host_path(char* out, size_t cap, const char* guest)
      if (strncmp(guest, "/dev_flash/", 11) == 0) {
          const char* fw = getenv("PS3_DEV_FLASH");
          if (!fw || !*fw) fw = "D:/recomp/tools/rpcs3/dev_flash";
@@ -269,18 +270,18 @@ index e8f6c2b..a84ce62 100644
          return;
      }
 diff --git a/runtime/ppu/ppu_hle.cpp b/runtime/ppu/ppu_hle.cpp
-index acbaf12..0321296 100644
+index d9ce0c3..309299f 100644
 --- a/runtime/ppu/ppu_hle.cpp
 +++ b/runtime/ppu/ppu_hle.cpp
-@@ -17,6 +17,7 @@
-  * Compiled as C++ (matches the lifted output). Game-agnostic.
+@@ -18,6 +18,7 @@
   */
+ #define PPU_NO_INLINE_LOADS   /* declares its own out-of-line vm_read* below */
  #include "ppu_recomp.h"   /* ppu_context */
 +#include "ps3emu/log_first.h"
  #include "ps3emu/nid.h"   /* ps3_nid_table, ps3_nid_entry */
  #include "ps3emu/milestone.h" /* ps3_msf -- boot milestone log */
  #include <stdlib.h>       /* getenv */
-@@ -276,7 +277,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
+@@ -277,7 +278,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
                        s_ha = e ? (long)strtoul(e, 0, 16) : 0; }
        if (s_ha && nid == (uint32_t)s_ha) {
          static int _n = 0;
@@ -289,7 +290,7 @@ index acbaf12..0321296 100644
            fprintf(stderr, "[hle-args] nid=0x%08X r3=0x%08X r4=0x%08X r5=0x%08X r6=0x%08X "
                            "r7=0x%08X r8=0x%08X r9=0x%08X r10=0x%08X lr=0x%08X\n",
                    nid, (uint32_t)ctx->gpr[3], (uint32_t)ctx->gpr[4], (uint32_t)ctx->gpr[5],
-@@ -368,7 +369,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
+@@ -369,7 +370,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
                              }
                          }
                          static int _n = 0;
@@ -299,7 +300,7 @@ index acbaf12..0321296 100644
                          opd = 0;   /* fall through to the HLE handler below */
                          break;
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index bf75dc8..d8c7b3b 100644
+index 1baea72..99fba64 100644
 --- a/runtime/ppu/ppu_loader.cpp
 +++ b/runtime/ppu/ppu_loader.cpp
 @@ -21,6 +21,7 @@
@@ -310,7 +311,7 @@ index bf75dc8..d8c7b3b 100644
  #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
-@@ -1771,7 +1772,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
+@@ -1799,7 +1800,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
        if (s_wv && v == s_wv && a >= s_wvlo && a < s_wvhi &&
            (!s_wvg || GetFileAttributesA(s_wvg) != INVALID_FILE_ATTRIBUTES)) {
            static int _n = 0;
@@ -319,7 +320,7 @@ index bf75dc8..d8c7b3b 100644
                fprintf(stderr, "[wv] 0x%08X <- 0x%X (w%d) guest-fn=0x%08X\n",
                        a, v, width, ppu_prof_resolve_host(ra));
                extern PPU_THREAD_LOCAL ppu_context* g_active_ctx;
-@@ -1858,7 +1859,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
+@@ -1886,7 +1887,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
      if (!b) return;
      if (a >= b + 0x40 && a < b + 0xC0) {
          static int _n = 0;
@@ -328,7 +329,7 @@ index bf75dc8..d8c7b3b 100644
              fprintf(stderr, "[sync-write] +0x%02X <- 0x%X (w%d) guest-fn=0x%08X\n",
                      a - b, v, width, ppu_prof_resolve_host(ra));
      }
-@@ -2671,7 +2672,7 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
+@@ -2712,7 +2713,7 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
          ppu_fn fn2 = ppu_lookup(toc_reg);
          if (fn2) {
              static int _n = 0;

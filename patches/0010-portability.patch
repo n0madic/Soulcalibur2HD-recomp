@@ -12,8 +12,9 @@ Module access and portability: separate game module, optional LGPL decoder, MinG
   answer slots and the sysutil completion flag.
 
 ---
+
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 1b6518b..0d854fd 100644
+index f1ba5a9..ea9fdd9 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -76,9 +76,16 @@ endif()
@@ -36,48 +37,11 @@ index 1b6518b..0d854fd 100644
  
  # Runtime core (syscalls, PPU, SPU, memory)
  file(GLOB_RECURSE RUNTIME_SOURCES
-diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
-index 93d507f..1a74615 100644
---- a/libs/spurs/cellSpurs.c
-+++ b/libs/spurs/cellSpurs.c
-@@ -2537,13 +2537,8 @@ static int jg_wait(u32 ea)
-  * this queue, and would only notify again after the event arrives -- so
-  * signalling at walker exit deadlocks both sides. Signal when the WORK
-  * completes: at END, and on reaching a guard with jobs run this lap. */
--#ifdef _WIN32
--#  define SPURS_JOB_TLS __declspec(thread)
--#else
--#  define SPURS_JOB_TLS __thread
--#endif
--extern SPURS_JOB_TLS uint32_t g_spurs_job_mbox, g_spurs_job_mbox_intr, g_spurs_job_cmd;
--extern SPURS_JOB_TLS int g_spurs_job_mbox_valid;
-+extern SPU_THREAD_LOCAL uint32_t g_spurs_job_mbox, g_spurs_job_mbox_intr, g_spurs_job_cmd;
-+extern SPU_THREAD_LOCAL int g_spurs_job_mbox_valid;
- 
- /* SPURS_EVENT_D3=<n>: probe. The value a job query returns to the PPU is read
-  * from the completion event's data3 field (the guest stores r7 at sp+0xB8 and
-diff --git a/libs/system/cellSysutil.c b/libs/system/cellSysutil.c
-index 252c3e8..b212982 100644
---- a/libs/system/cellSysutil.c
-+++ b/libs/system/cellSysutil.c
-@@ -81,8 +81,12 @@ void cellSysutilQueueEvent(int slot, uint32_t status, uint32_t param)
- static SRWLOCK s_completion_lock = SRWLOCK_INIT;
- #define COMPLETION_LOCK() AcquireSRWLockExclusive(&s_completion_lock)
- #define COMPLETION_UNLOCK() ReleaseSRWLockExclusive(&s_completion_lock)
-+#ifdef _MSC_VER
- #define COMPLETION_TLS __declspec(thread)
- #else
-+#define COMPLETION_TLS __thread
-+#endif
-+#else
- #include <pthread.h>
- static pthread_mutex_t s_completion_lock = PTHREAD_MUTEX_INITIALIZER;
- #define COMPLETION_LOCK() pthread_mutex_lock(&s_completion_lock)
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index a4bbb99..174a284 100644
+index 0e76eaa..bdeaf6f 100644
 --- a/runtime/ppu/ppu_loader.cpp
 +++ b/runtime/ppu/ppu_loader.cpp
-@@ -624,7 +624,12 @@ static uint32_t samp_stack_guest(HANDLE h, const CONTEXT* c)
+@@ -626,7 +626,12 @@ static uint32_t samp_stack_guest(HANDLE h, const CONTEXT* c)
      const uintptr_t* sp = (const uintptr_t*)c->Rsp;
      for (int i = 0; i < 512; i++) {          /* 4 KB of stack */
          uintptr_t v;
@@ -90,7 +54,7 @@ index a4bbb99..174a284 100644
          uint32_t g = samp_lookup(v);
          if (g) return g;
      }
-@@ -698,7 +703,7 @@ static DWORD WINAPI samp_thread(LPVOID p)
+@@ -700,7 +705,7 @@ static DWORD WINAPI samp_thread(LPVOID p)
   * Writing the word leaves memory self-consistent: lwarx, the CAS and the
   * polling reader all see the same thing, so the guest behaves as it would if
   * whatever should have cleared the counter had done so. */
@@ -99,7 +63,7 @@ index a4bbb99..174a284 100644
  static DWORD WINAPI poke_thread(LPVOID p)
  {
      const uint32_t ea  = (uint32_t)(uintptr_t)p;
-@@ -1938,6 +1943,9 @@ void flow_lookup_alloc(unsigned int p) {
+@@ -1966,6 +1971,9 @@ void flow_lookup_alloc(unsigned int p) {
  
  /* Cross-fragment trampoline pointer (matches the lifted header's TLS decl). */
  extern "C" PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*) = nullptr;
@@ -110,10 +74,10 @@ index a4bbb99..174a284 100644
  /* Per-thread active guest context, for the crash handler to report the guest PC
   * (ctx->pc, updated by lifted code at block boundaries) of a host AV. */
 diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
-index 88f02e0..0238894 100644
+index 50036e3..2363008 100644
 --- a/runtime/spu/spu_context.h
 +++ b/runtime/spu/spu_context.h
-@@ -769,6 +769,17 @@ static inline int spu_channel_has_data(const spu_channel* ch)
+@@ -775,6 +775,17 @@ static inline int spu_channel_has_data(const spu_channel* ch)
   * function in the active image and runs it. Referenced by SPU_RET/SPU_DRAIN. */
  void spu_indirect_branch(spu_context* ctx);
  
@@ -131,7 +95,7 @@ index 88f02e0..0238894 100644
  /* Pending cross-function transfer target; NULL when none. Thread-local: each
   * spu_context is pinned to one host thread for its lifetime. */
  extern SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*);
-@@ -778,6 +789,7 @@ extern SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*);
+@@ -784,6 +795,7 @@ extern SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*);
   * trampoline hop, which is the one that actually precedes a bad branch. */
  extern SPU_THREAD_LOCAL uint32_t g_spu_pch[8];
  extern SPU_THREAD_LOCAL unsigned g_spu_pch_n;
@@ -156,20 +120,11 @@ index 62ec5cd..593c2ed 100644
  
  /* SPURS task-launch interception at a trampoline hop (milestone: SPURS kernel).
 diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
-index 18bd52c..e66cb88 100644
+index 6b2928f..ec6f443 100644
 --- a/runtime/spu/spurs_job.c
 +++ b/runtime/spu/spurs_job.c
-@@ -136,16 +136,11 @@ const uint8_t* spurs_job_ls_for_handle(uint32_t handle)
-  * flight. As plain globals these were clobbered between a job finishing and its
-  * own completion being pushed, so a query could be answered with an unrelated
-  * job's mailbox. Per-thread keeps each job paired with its own answer. */
--#ifdef _WIN32
--#  define SPURS_JOB_TLS __declspec(thread)
--#else
--#  define SPURS_JOB_TLS __thread
--#endif
--SPURS_JOB_TLS uint32_t g_spurs_job_mbox, g_spurs_job_mbox_intr;
-+SPU_THREAD_LOCAL uint32_t g_spurs_job_mbox, g_spurs_job_mbox_intr;
+@@ -146,8 +146,8 @@ const uint8_t* spurs_job_ls_for_handle(uint32_t handle)
+ SPURS_JOB_TLS uint32_t g_spurs_job_mbox, g_spurs_job_mbox_intr;
  /* The command this job ran, read from its own command block. Only a query
   * expects an answer back through the completion event. */
 -SPURS_JOB_TLS uint32_t g_spurs_job_cmd;
@@ -180,10 +135,10 @@ index 18bd52c..e66cb88 100644
  int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
                        uint32_t job_ea, uint32_t job_desc_size)
 diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
-index d84cfd3..a9ba1a3 100644
+index e06fa6e..ca2789c 100644
 --- a/runtime/syscalls/sys_ppu_thread.c
 +++ b/runtime/syscalls/sys_ppu_thread.c
-@@ -4,19 +4,15 @@
+@@ -4,6 +4,7 @@
  
  #include <setjmp.h>
  #include "ps3emu/log_first.h"
@@ -191,21 +146,6 @@ index d84cfd3..a9ba1a3 100644
  
  /* sys_ppu_thread_exit never returns on hardware. Returning CELL_OK to the
   * guest lets it run on past the call: Twisted Metal has a thread that exits
-  * from inside a loop and so called exit 1,435 times in one run, staying alive
-  * and holding whatever it held. Arm a jump in the thread proc and unwind to it
-  * instead. PS3_NO_THREAD_EXIT_UNWIND=1 restores the old behaviour. */
--#if defined(_WIN32)
--#  define PPU_TLS __declspec(thread)
--#else
--#  define PPU_TLS __thread
--#endif
--static PPU_TLS jmp_buf s_exit_jmp;
--static PPU_TLS int     s_exit_armed = 0;
-+static PPU_THREAD_LOCAL jmp_buf s_exit_jmp;
-+static PPU_THREAD_LOCAL int     s_exit_armed = 0;
- 
- #include <stddef.h>
- #include "sys_ppu_thread.h"
 diff --git a/third_party/at3_stub/at3_stub.c b/third_party/at3_stub/at3_stub.c
 new file mode 100644
 index 0000000..9de4e96
@@ -227,10 +167,10 @@ index 0000000..9de4e96
 +    return -1;
 +}
 diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
-index 66c65e5..34d38b7 100644
+index 6e28f3b..f23355b 100644
 --- a/tools/ppu_lifter.py
 +++ b/tools/ppu_lifter.py
-@@ -338,8 +338,16 @@ extern "C" void ps3_indirect_call(ppu_context* ctx);
+@@ -474,8 +474,16 @@ extern "C" void ps3_indirect_call_to(ppu_context* ctx, uint32_t target);
  extern "C" void ps3_hle_call(unsigned int nid, ppu_context* ctx);
  
  /* Trampoline function pointer for cross-fragment branches (TLS).

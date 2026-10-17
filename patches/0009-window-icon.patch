@@ -6,6 +6,7 @@ optional, weakly linked hook (sc2hd_set_app_icon) once the application is a regu
 Dock icon of a bare executable. Without the resource or the hook nothing changes.
 
 ---
+
 diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
 index 294a3aa..02c6c6f 100644
 --- a/libs/video/rsx_d3d12_backend.c
@@ -20,10 +21,10 @@ index 294a3aa..02c6c6f 100644
      RegisterClassExA(&wc);
  
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index eee286d..a2aeb6f 100644
+index c5f1a03..fba6909 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
-@@ -479,10 +479,14 @@ - (void)quit:(id)sender { (void)sender; s_closed = 1; }
+@@ -598,10 +598,14 @@ - (void)quit:(id)sender { (void)sender; atomic_store(&s_closed, 1); }
  @end
  static RsxQuitTarget* s_quit_target;
  

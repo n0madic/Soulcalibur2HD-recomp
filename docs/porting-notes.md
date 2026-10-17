@@ -1,6 +1,6 @@
 # Porting notes
 
-What had to be changed in the [ps3recomp](https://github.com/sp00nznet/ps3recomp) toolkit (pinned at `a2c20108`, v0.14.0 + PR 246)
+What had to be changed in the [ps3recomp](https://github.com/sp00nznet/ps3recomp) toolkit (pinned at `0fe7dbf5`, v0.15.0)
 and added around it to make Soulcalibur II HD Online (PS3, version 01.00 or with update 01.01) run. The changes to the toolkit are `patches/`, applied
 in order to a fresh clone by `scripts/build_host.sh` (one patch per area, each with its own description; see "Patches" below); the port's own code is in `src/`. The toolkit's README lists macOS as
 "runs a recompiled game: no": its boot scaffold had never been booted on macOS before this port.
@@ -20,7 +20,7 @@ in order to a fresh clone by `scripts/build_host.sh` (one patch per area, each w
 | Patch | Area |
 |---|---|
 | `0001-ppu-system-hle` | cellGame / cellMsgDialog / cellSaveData / cellNetCtl fixes, multi-root `PS3_DEV_FLASH` |
-| `0002-spurs-and-spu-runtime` | SPURS workloads, SPU wake-ups, thread images, double precision, LS hooks, saturating log counters |
+| `0002-spurs-and-spu-runtime` | SPURS workloads, SPU wake-ups, thread images, LS hooks, saturating log counters |
 | `0003-audio` | `AUDIO_PEAK` / `AUDIO_WAV`, the Windows mix paced on the block clock |
 | `0004-input` | cellPad keyboard fallbacks (macOS, SDL) and the SDL gamepad thread |
 | `0005-gcm-draw-engine` | display lists, supersampled resolve on the GPU, snapshots, NV3089 row copy, vertex program memo |
@@ -71,6 +71,11 @@ What was needed to get here (beyond the SPURS work above):
   while the walker is starting or stuck in present(). A one-off list (it carries the 2D vertex-program matrix) was overwritten
   before the walker reached it in about every second launch and the whole UI stayed black. Lists are now copied when the guest
   stores `put` (hook in `vm_write32`), up to their RET. `main.cpp` also starts the guest only after the RSX backend is up.
+- `patches/0005`: since toolkit v0.15.0 the engine keeps an antialiased surface at sample resolution (the game's 2560x1440 supersampled
+  scene), so `rsx_draw_engine_resolve_read` (which expects the host surface at display size) no longer matches it and the six resolve
+  tiles go through the generic NV3089 copy. That copy's engine read started one pixel after the loop's own first source pixel for the
+  tiles' 1-pixel source offset (`uv=0x00100010`): the first row and column of every tile stayed black, a grid over the picture.
+  `nv3089_engine_read` now starts where the loop does.
 - `patches/0005`: `RSX_ENGINE_SNAP_DIR=<dir>` (+ `RSX_ENGINE_SNAP_EVERY_S`, default 5) writes the presented frame to PPM every n seconds,
   which is how a run is followed without watching the window.
 
@@ -92,7 +97,7 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
   and are not patched after the copy; the script writes images of them at that address and registers them by their first
   16 bytes (`spu/sc2_overlays.c`). Interpreted, they made the SPU run at a third of real time: the game wrote 4 blocks of
   audio per 12 and the output was gated 33%, i.e. heavily distorted.
-- `patches/0002`: double-precision SPU instructions in the interpreter; `patches/0003`: `AUDIO_PEAK=1`, `AUDIO_WAV=<file>`.
+- `patches/0003`: `AUDIO_PEAK=1`, `AUDIO_WAV=<file>`. (The interpreter's double-precision SPU instructions this port first added are in the toolkit since v0.15.0.)
 - `patches/0007`: Metal backend gets a main menu with Cmd+Q ("Quit <title>"); closing the window or Cmd+Q ends the process (`main.cpp` calls `_exit(0)` when `rsx_backend_pump()` reports the close).
 - `patches/0002`: `spu_register_ls_hook`, `SPU_GETLOG=<lo>,<hi>` (log MFC transfers touching an LS range), lr in the "synthesised stop" message. `patches/0001`: see below.
 - `patches/0007`: the Metal window drops key down/up events (the pad polls the keyboard itself), so a keypress no longer plays the system alert sound; Cmd shortcuts still reach the menu.

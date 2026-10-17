@@ -39,10 +39,10 @@ index 9a5966b..73964ca 100644
      uint64_t bitpat     = LV2_ARG_U64(ctx, 1);
      uint32_t mode       = LV2_ARG_U32(ctx, 2);
 diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
-index a9ba1a3..ff40f2f 100644
+index ca2789c..0f1c354 100644
 --- a/runtime/syscalls/sys_ppu_thread.c
 +++ b/runtime/syscalls/sys_ppu_thread.c
-@@ -91,6 +91,38 @@ static ppu_thread_info* find_thread(uint64_t thread_id)
+@@ -98,6 +98,38 @@ static ppu_thread_info* find_thread(uint64_t thread_id)
      return t;
  }
  
@@ -81,7 +81,7 @@ index a9ba1a3..ff40f2f 100644
  /* ---------------------------------------------------------------------------
   * Host thread entry point
   * -----------------------------------------------------------------------*/
-@@ -495,7 +527,15 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
+@@ -502,7 +534,15 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
      }
  #endif
  
@@ -133,10 +133,10 @@ index f580e47..6003366 100644
      static int d = -1; if (d < 0) d = getenv("SEM_ERRDBG") ? 1 : 0;
      if (d && r) { static int n = 0; if (n++ < 12)
 diff --git a/runtime/syscalls/sys_timer.c b/runtime/syscalls/sys_timer.c
-index fefcf8f..b43d66c 100644
+index 6f515a0..c99c270 100644
 --- a/runtime/syscalls/sys_timer.c
 +++ b/runtime/syscalls/sys_timer.c
-@@ -108,6 +108,7 @@ static void write_be64(uint32_t addr, uint64_t val)
+@@ -112,6 +112,7 @@ static void write_be64(uint32_t addr, uint64_t val)
  int64_t sys_timer_usleep(ppu_context* ctx)
  {
      uint64_t usec = LV2_ARG_U64(ctx, 0);
@@ -144,7 +144,7 @@ index fefcf8f..b43d66c 100644
      { extern unsigned long long ps3_qpc_us(void);
        static int n=0; if (n++ < 60)
          fprintf(stderr, "[WAIT] t=%lluus timer_usleep(%llu us) lr=0x%08llX cia=0x%08llX\n", ps3_qpc_us(),
-@@ -265,6 +266,7 @@ int64_t sys_timer_usleep(ppu_context* ctx)
+@@ -269,6 +270,7 @@ int64_t sys_timer_usleep(ppu_context* ctx)
  int64_t sys_timer_sleep(ppu_context* ctx)
  {
      uint32_t sec = LV2_ARG_U32(ctx, 0);

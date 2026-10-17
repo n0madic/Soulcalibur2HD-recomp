@@ -11,6 +11,7 @@ cellAudio: diagnostics, and a mix paced on the block clock on Windows.
   blocks and exactly 187.5 blocks a second; catching up after a stall still keeps two blocks at least 4 ms apart.
 
 ---
+
 diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
 index b51fb7c..c83b8d7 100644
 --- a/libs/audio/cellAudio.c

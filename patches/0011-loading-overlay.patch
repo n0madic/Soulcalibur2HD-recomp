@@ -7,10 +7,10 @@ Boot "Loading..." overlay: the window is black for the first seconds of a title.
 - The D3D12 backend does not run the draw engine and has no overlay.
 
 diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
-index bcf7114..33ee2ee 100644
+index 782641c..62c00d6 100644
 --- a/libs/video/rsx_draw_engine.c
 +++ b/libs/video/rsx_draw_engine.c
-@@ -172,6 +172,7 @@ static struct {
+@@ -176,6 +176,7 @@ static struct {
      u64 texture_use_serial;
      u32 guest_draws;
      u32 last_guest_draws;
@@ -18,7 +18,7 @@ index bcf7114..33ee2ee 100644
      u32 last_present_surface;
      u32 last_flip_buffer;
      u64 write_serial;       /* orders colour and depth writes to one address */
-@@ -2675,11 +2676,44 @@ static u32 eng_present_surface(u32 buffer_id)
+@@ -2863,11 +2864,44 @@ static u32 eng_present_surface(u32 buffer_id)
      return eng_current_surface();
  }
  
@@ -63,7 +63,7 @@ index bcf7114..33ee2ee 100644
      if (getenv("PS3RECOMP_METAL_FRAME_DUMP") && g.frames % 120 == 0) {
          u32 current = eng_current_surface();
          fprintf(stderr, "[rsx capture] frame=%u buffer=%u selected=%u current=%u draws=%u surfaces=%u\n",
-@@ -2757,6 +2791,10 @@ int rsx_draw_engine_init(u32 width, u32 height)
+@@ -2946,6 +2980,10 @@ int rsx_draw_engine_init(u32 width, u32 height)
      sink.flip             = sink_flip;
      rsx_dispatch_init(&g.rsx, &sink);
      g.ready = 1;
@@ -75,10 +75,10 @@ index bcf7114..33ee2ee 100644
      cellGcm_replay_display_buffers_to_engine();
      fprintf(stderr, "[rsx engine] register-file draw engine up (%ux%u)\n",
 diff --git a/libs/video/rsx_draw_engine.h b/libs/video/rsx_draw_engine.h
-index f858a8f..4de1ccb 100644
+index e8cdbf9..ce76a6b 100644
 --- a/libs/video/rsx_draw_engine.h
 +++ b/libs/video/rsx_draw_engine.h
-@@ -297,6 +297,10 @@ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32
+@@ -310,6 +310,10 @@ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32
   * memory first, so the transfer sees (or overwrites) the resolved pixels. */
  void rsx_draw_engine_guest_access(u32 location, u32 offset, u32 bytes);
  
@@ -169,10 +169,10 @@ index 0000000..40e8d6c
 +
 +#endif
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index a2aeb6f..9975f41 100644
+index fba6909..c535bf3 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
-@@ -2087,6 +2087,7 @@ static void release_surfaces(void)
+@@ -2237,6 +2237,7 @@ static void release_surfaces(void)
   * --------------------------------------------------------------------------*/
  
  #include "rsx_draw_engine.h"
@@ -180,7 +180,7 @@ index a2aeb6f..9975f41 100644
  
  #define ENG_MAX_OBJECTS  4096
  #define ENG_MAX_PIPES    4096
-@@ -2180,6 +2181,8 @@ static void release_surfaces(void)
+@@ -2335,6 +2336,8 @@ static void release_surfaces(void)
  static id<MTLRenderPipelineState> s_eng_depth_pso;
  static id<MTLSamplerState>        s_eng_point_sampler;
  static id<MTLRenderPipelineState> s_eng_fxaa_pso;
@@ -189,15 +189,15 @@ index a2aeb6f..9975f41 100644
  static MTLPixelFormat             s_eng_fxaa_pso_fmt;
  
  static NSString* const kEngHelperMSL = @
-@@ -2416,6 +2419,7 @@ static void eng_shutdown(void* user)
+@@ -2572,6 +2575,7 @@ static void eng_shutdown(void* user)
      s_eng_depth_pso = nil;
      s_eng_point_sampler = nil;
      s_eng_fxaa_pso = nil;
 +    s_loading_tex = nil;
      s_eng_active = 0;
- }
- 
-@@ -3127,6 +3131,35 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+     s_eng_encoding_failed = 0;
+     s_eng_checked_completed = 0;
+@@ -3378,6 +3382,35 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
      return *pso;
  }
  
@@ -233,7 +233,7 @@ index a2aeb6f..9975f41 100644
  static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
                                  id<MTLTexture> dst)
  {
-@@ -3150,6 +3183,7 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+@@ -3401,6 +3434,7 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
      const int scaled = (vw != sw || vh != sh);
      [e setFragmentSamplerState:((s_fxaa || scaled) ? s_default_sampler : s_eng_point_sampler) atIndex:0];
      [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -242,7 +242,7 @@ index a2aeb6f..9975f41 100644
  }
  
 diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
-index b04adef..fa40f9d 100644
+index 507d8ac..48badf2 100644
 --- a/libs/video/rsx_vulkan_backend.c
 +++ b/libs/video/rsx_vulkan_backend.c
 @@ -52,6 +52,7 @@
@@ -253,7 +253,7 @@ index b04adef..fa40f9d 100644
  #include "vulkan/rsx_vk_fallback_vert.spv.h"
  #include "vulkan/rsx_vk_fallback_frag.spv.h"
  
-@@ -1877,6 +1878,40 @@ static int vk_window_acquire(u32* idx)
+@@ -1879,6 +1880,40 @@ static int vk_window_acquire(u32* idx)
      return 0;
  }
  
@@ -294,7 +294,7 @@ index b04adef..fa40f9d 100644
  /* Records the blit of the offscreen target into swapchain image `idx`, ending with the image ready to present. */
  static void vk_window_blit(VkCommandBuffer cmd, u32 idx)
  {
-@@ -1900,6 +1935,7 @@ static void vk_window_blit(VkCommandBuffer cmd, u32 idx)
+@@ -1902,6 +1937,7 @@ static void vk_window_blit(VkCommandBuffer cmd, u32 idx)
      pvkCmdBlitImage(cmd, s_vk.color.img, VK_IMAGE_LAYOUT_GENERAL,
                      s_vk.sc_images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      1, &blit, VK_FILTER_LINEAR);
@@ -302,7 +302,7 @@ index b04adef..fa40f9d 100644
      b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
      b.dstAccessMask = 0;
      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-@@ -3671,6 +3707,8 @@ void rsx_vulkan_backend_shutdown(void)
+@@ -3704,6 +3740,8 @@ void rsx_vulkan_backend_shutdown(void)
          vk_destroy_image(&s_vk.color);
          vk_destroy_buffer(&s_vk.vertices);
          vk_destroy_buffer(&s_vk.readback);

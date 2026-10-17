@@ -5,6 +5,7 @@ Esc pauses: on the keyboard Esc is START (the game's pause menu), not quit.
   (Alt+F4; Cmd+Q on macOS, whose window never quit on Esc).
 
 ---
+
 diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
 index 947b7b7..736a8f1 100644
 --- a/libs/input/cellPad.c
@@ -76,10 +77,10 @@ index 355cf09..c57f009 100644
  
      return DefWindowProcA(hwnd, msg, wp, lp);
 diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
-index adc3fae..55123f7 100644
+index 08226ce..f06abad 100644
 --- a/libs/video/rsx_vulkan_backend.c
 +++ b/libs/video/rsx_vulkan_backend.c
-@@ -3784,7 +3784,6 @@ int rsx_vulkan_backend_pump_messages(void)
+@@ -3817,7 +3817,6 @@ int rsx_vulkan_backend_pump_messages(void)
      SDL_Event e;
      while (SDL_PollEvent(&e)) {
          if (e.type == SDL_QUIT) quit = 1;
