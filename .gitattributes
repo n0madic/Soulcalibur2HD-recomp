@@ -1,5 +1,6 @@
 # The patches are applied byte for byte to the toolkit's sources (LF, a few files with CRLF lines). A checkout with
 # core.autocrlf (the Git for Windows default) rewrote them with CRLF and `git apply` refused every one.
 patches/*.patch -text
+patches/upstream/*.patch -text
 # Run by bash (Git Bash / MSYS on Windows), which does not accept CRLF.
 *.sh text eol=lf

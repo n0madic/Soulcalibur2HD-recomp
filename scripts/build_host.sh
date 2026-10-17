@@ -50,6 +50,10 @@ if [[ ! -d "$TOOLKIT/.git" ]]; then
   mkdir -p "$BUILD"
   git -c core.autocrlf=false clone https://github.com/sp00nznet/ps3recomp.git "$TOOLKIT"
 fi
+# A clone from before the last move of the pin does not have the new revision yet.
+if ! git -C "$TOOLKIT" cat-file -e "$TOOLKIT_REV^{commit}" 2>/dev/null; then
+  git -C "$TOOLKIT" fetch -q --tags origin
+fi
 # The patches are made against the sources as committed: no line-ending conversion (Git for Windows defaults to it).
 git -C "$TOOLKIT" config core.autocrlf false
 # The patches are applied to a clean checkout, once per change of the revision or of the patches: they overlap, so a

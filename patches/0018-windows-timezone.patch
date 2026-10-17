@@ -1,0 +1,25 @@
+diff --git a/runtime/syscalls/sys_timer.c b/runtime/syscalls/sys_timer.c
+index c99c270..8056a52 100644
+--- a/runtime/syscalls/sys_timer.c
++++ b/runtime/syscalls/sys_timer.c
+@@ -301,12 +301,15 @@ int64_t sys_time_get_timezone(ppu_context* ctx)
+     struct tm local;
+     int32_t standard_minutes, daylight_minutes;
+ #ifdef _WIN32
+-    _tzset();
+-    long west_seconds, daylight_bias;
+-    if (localtime_s(&local, &now) || _get_timezone(&west_seconds) || _get_dstbias(&daylight_bias))
++    /* Ask the system, not the C runtime: _get_timezone and _get_dstbias do not exist in the msvcrt.dll that a
++     * MinGW-w64 toolchain with the msvcrt runtime links against. Bias is minutes west of UTC. */
++    TIME_ZONE_INFORMATION tz;
++    DWORD zone_id = GetTimeZoneInformation(&tz);
++    if (zone_id == TIME_ZONE_ID_INVALID)
+         return (int32_t)CELL_EAGAIN;
+-    standard_minutes = (int32_t)(-west_seconds / 60);
+-    daylight_minutes = local.tm_isdst > 0 ? (int32_t)(-daylight_bias / 60) : 0;
++    standard_minutes = -(int32_t)(tz.Bias + tz.StandardBias);
++    daylight_minutes = zone_id == TIME_ZONE_ID_DAYLIGHT ? -(int32_t)(tz.DaylightBias - tz.StandardBias) : 0;
++    (void)local; (void)now;
+ #else
+     if (!localtime_r(&now, &local)) return (int32_t)CELL_EAGAIN;
+     daylight_minutes = 0;
