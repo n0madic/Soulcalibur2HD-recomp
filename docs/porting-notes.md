@@ -52,6 +52,8 @@ top of it. When a PR is merged into the pinned revision its file is deleted.
 | `0013-resizable-window` | Vulkan window: resizable, maximizable, F11 / Alt+Enter fullscreen, letterboxed frame, survives minimize |
 | `0014-metal-fullscreen` | Metal: `PS3RECOMP_FULLSCREEN=1` (`--fullscreen`, read by Vulkan too) starts in fullscreen, Ctrl+Cmd+F toggles it |
 | `0015-escape-pause` | Esc is the keyboard's START (pause menu) instead of closing the window |
+| `0016-unlock-in-memory` | `SC2HD_UNLOCK` (the launcher's `--unlock`): save flags set in memory only |
+| `0017-gpu-resolve-downscale` | a resolve out of a surface held at sample resolution is a GPU downscale (Metal, Vulkan) |
 
 ## SPURS queues
 The port has no Sony firmware code. cellSpurs is the toolkit's HLE; the one part it cannot do, the lock-free work queues the game
@@ -89,11 +91,16 @@ What was needed to get here (beyond the SPURS work above):
   while the walker is starting or stuck in present(). A one-off list (it carries the 2D vertex-program matrix) was overwritten
   before the walker reached it in about every second launch and the whole UI stayed black. Lists are now copied when the guest
   stores `put` (hook in `vm_write32`), up to their RET. `main.cpp` also starts the guest only after the RSX backend is up.
-- `patches/0005`: since toolkit v0.15.0 the engine keeps an antialiased surface at sample resolution (the game's 2560x1440 supersampled
-  scene), so `rsx_draw_engine_resolve_read` (which expects the host surface at display size) no longer matches it and the six resolve
-  tiles go through the generic NV3089 copy. That copy's engine read started one pixel after the loop's own first source pixel for the
-  tiles' 1-pixel source offset (`uv=0x00100010`): the first row and column of every tile stayed black, a grid over the picture.
-  `nv3089_engine_read` now starts where the loop does.
+- `patches/0005`, `patches/0017`: since toolkit v0.15.0 the engine keeps an antialiased surface at sample resolution (the game's 2560x1440
+  supersampled scene), so `rsx_draw_engine_resolve_read` (which expects the host surface at display size) no longer matched it and the
+  six 2:1 resolve tiles went through the generic NV3089 copy, which read the whole surface back every frame (fights at 43 frames a
+  second on Metal). That copy's engine read also started one pixel after the loop's own first source pixel for the tiles' 1-pixel
+  source offset (`uv=0x00100010`): the first row and column of every tile stayed black, a grid over the picture; `nv3089_engine_read`
+  now starts where the loop does (`0005`). `0017` adds an optional backend call, `color_target_resolve`, a 1/k downscale on the GPU
+  (Metal: one pass with a linear sampler; Vulkan: linear blits), which the engine uses for the tiles when the blit is
+  INTERPOLATOR_FOH from a corner origin, as this game's is: fights at 56-60 frames a second. The tile's source starts at the
+  guest position, i.e. one texel in (RPCS3 does the same for a corner origin), which puts the picture about 0.75 pixel up and left
+  of what the nearest-sample copy gave. `RSX_ENGINE_GPU_RESOLVE=0` turns the GPU path off.
 - `patches/0005`: `RSX_ENGINE_SNAP_DIR=<dir>` (+ `RSX_ENGINE_SNAP_EVERY_S`, default 5) writes the presented frame to PPM every n seconds,
   which is how a run is followed without watching the window.
 

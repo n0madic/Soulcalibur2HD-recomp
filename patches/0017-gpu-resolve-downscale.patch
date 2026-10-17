@@ -1,0 +1,369 @@
+Resolve out of a surface held at sample resolution: a 1/k downscale on the GPU (Metal, Vulkan)
+
+- Since the toolkit keeps an antialiased target at sample resolution, a title's resolve out of it (this game: six 2:1
+  NV3089 tiles, INTERPOLATOR_FOH, source origin at the texel corner, +1 texel offset) is a downscale of the host
+  surface, not the 1:1 copy rsx_draw_engine_resolve_read assumed for a surface drawn at display size. With no match
+  it went through the guest-memory copy, which reads the whole 2560x1440 surface back every frame.
+- rsx_draw_backend gains an optional color_target_resolve(dst, dx, dy, src, sx, sy, w, h, k): each destination pixel
+  is the linear sample at the centre of its k x k block of the source, edge repeated. The engine uses it to fill a
+  display-sized target it keeps for the guest image, with the machinery the 1:1 GPU resolve already has (pending
+  rectangles, store to guest memory on demand, the target sampled as the final pass's texture).
+- Metal: a stream record that runs one render pass with a linear sampler. Vulkan: linear blits, one for the blocks
+  inside the source and one per pixel whose block crosses its edge.
+- NV3089 passes whether the blit interpolates from a corner origin; anything else keeps the guest-memory copy.
+- RSX_ENGINE_GPU_RESOLVE=0 turns it off, as for the 1:1 resolve.
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 95e6f3f..6415b40 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -1248,7 +1248,9 @@ static void nv3089_blit(void)
+         if (rsx_draw_engine_resolve_read(sloc, s_nv3089.in_off + (v0 >> 4) * in_pitch + (u0 >> 4) * 4u, in_pitch,
+                                          s_nv3089.ds_dx, s_nv3089.dt_dy, dloc,
+                                          s_gcm2d.dst_offset + out_y * dst_pitch + out_x * 4u, dst_pitch,
+-                                         rw, rh))
++                                         rw, rh,
++                                         /* INTERPOLATOR_FOH from a corner origin (in_fmt: origin << 16, interpolator << 24) */
++                                         ((s_nv3089.in_fmt >> 16) & 0xFFu) == 2u && (s_nv3089.in_fmt >> 24) == 1u))
+             return;
+     }
+     if (bpp == 4) nv3089_engine_read(in_pitch, out_w, out_h);
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+index 37e56c3..1d0d52c 100644
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -830,11 +830,22 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
+  * the old store of every resolve for a title that does.
+  */
+ 
+-static int eng_gpu_resolve_enabled(void)
++static int eng_gpu_resolve_env(void)
+ {
+     static int on = -1;
+     if (on < 0) { const char* e = getenv("RSX_ENGINE_GPU_RESOLVE"); on = !(e && e[0] == '0'); }
+-    return on && g.be->color_target_copy && g.be->readback;
++    return on;
++}
++
++static int eng_gpu_resolve_enabled(void)
++{
++    return eng_gpu_resolve_env() && g.be->color_target_copy && g.be->readback;
++}
++
++/* The same for a resolve that is a downscale (color_target_resolve). */
++static int eng_gpu_downscale_enabled(void)
++{
++    return eng_gpu_resolve_env() && g.be->color_target_resolve && g.be->readback;
+ }
+ 
+ static int eng_resolve_overlaps(const eng_resolve* r, u32 location, u32 offset, u32 bytes)
+@@ -996,15 +1007,50 @@ static u32 eng_resolve_texture(const rsx_dsp_texture* t)
+  * Writes the resolved rectangle straight into the destination in guest memory (32-bit pixels).
+  * Returns 0 when the source is not such a surface (the caller falls back to the guest-memory
+  * copy). */
+-int rsx_draw_engine_resolve_read(u32 src_loc, u32 src_offset, u32 src_pitch, u32 ds, u32 dt,
++/* A resolve out of a surface the host holds at sample resolution (rsx_dsp_get_surface reports an antialiased
++ * target in samples, so the guest's k-times-larger layout is the host's own: pitch = 4 * width): the guest
++ * position is the host position, and the k:1 downscale is done on the GPU into a display-sized target kept for
++ * the guest image, to which each tile adds its rectangle. 0 when that is not possible; the guest-memory copy
++ * (which reads the host pixels back at sample resolution) then does the resolve. */
++static int eng_resolve_downscale(u32 src_loc, u32 src_offset, u32 src_pitch, u32 k,
+                                  u32 dst_loc, u32 dst_offset, u32 dst_pitch, u32 out_w, u32 out_h)
++{
++    if (k > 4u || !eng_gpu_downscale_enabled()) return 0;
++    u32 gx = 0, gy = 0;
++    const u32 slot = eng_surface_at(src_loc, src_offset, src_pitch, &gx, &gy);
++    if (slot == ENG_INVALID) return 0;
++    const eng_surface* s = &g.surfaces[slot];
++    if (s->w % k || s->h % k || s->w / k < 2u) return 0;
++    const u32 ow = s->w / k, oh = s->h / k;
++    const u32 sx = gx / k, sy = gy / k;                      /* the tile's place in the display-sized picture */
++    if (sx >= ow || sy >= oh) return 1;                      /* beyond the picture: nothing to copy */
++    u32 w = out_w, h = out_h;
++    if (sx + w > ow) w = ow - sx;
++    if (sy + h > oh) h = oh - sy;
++    if (dst_pitch < 4u * ow || dst_offset < sy * dst_pitch + sx * 4u) return 0;
++    eng_resolve* r = eng_resolve_get(dst_loc, dst_offset - sy * dst_pitch - sx * 4u, dst_pitch, ow, oh);
++    if (!r) return 0;
++    const eng_rect q = { sx, sy, w, h };
++    const int add = eng_resolve_prepare(r, &q);
++    if (g.be->color_target_resolve(g.be->user, r->handle, sx, sy, s->handle, gx, gy, w, h, k) != 0) return 0;
++    if (add) r->rects[r->n_rects++] = q;
++    if (eng_coherence_log())
++        fprintf(stderr, "[rsx engine] resolve_read %u:0x%08X k=%u %ux%u <- surface 0x%08X at %u,%u: downscaled on the GPU\n",
++                src_loc, src_offset, k, w, h, s->offset, gx, gy);
++    return 1;
++}
++
++int rsx_draw_engine_resolve_read(u32 src_loc, u32 src_offset, u32 src_pitch, u32 ds, u32 dt,
++                                 u32 dst_loc, u32 dst_offset, u32 dst_pitch, u32 out_w, u32 out_h, int linear)
+ {
+     if (!g.ready || !g.be->readback || !src_pitch || !dst_pitch || !out_w || !out_h) return 0;
+     if (ds != dt || ds < 0x200000u || (ds & 0xFFFFFu)) return 0;     /* whole factor >= 2 */
+     const u32 k = ds >> 20;
+     u32 gx = 0, gy = 0;
+     const u32 slot = eng_surface_at_k(src_loc, src_offset, src_pitch, k, &gx, &gy);
+-    if (slot == ENG_INVALID) return 0;
++    if (slot == ENG_INVALID)
++        return linear && eng_resolve_downscale(src_loc, src_offset, src_pitch, k,
++                                               dst_loc, dst_offset, dst_pitch, out_w, out_h);
+     const eng_surface* s = &g.surfaces[slot];
+     const u32 sx = gx / k, sy = gy / k;
+     if (sx >= s->w || sy >= s->h) return 1;                           /* beyond the picture: nothing to copy */
+diff --git a/libs/video/rsx_draw_engine.h b/libs/video/rsx_draw_engine.h
+index ce76a6b..0a12e64 100644
+--- a/libs/video/rsx_draw_engine.h
++++ b/libs/video/rsx_draw_engine.h
+@@ -239,6 +239,15 @@ typedef struct rsx_draw_backend {
+      * surface) on the GPU with it rather than reading the picture back. */
+     int  (*color_target_copy)(void* user, u32 dst, u32 dx, u32 dy, u32 src,
+                               u32 sx, u32 sy, u32 w, u32 h);
++
++    /* Optional: a 1/k downscale on the GPU, ordered like the copy above. Each of the w x h pixels at (dx, dy) of
++     * colour target `dst` is the bilinear sample of colour target `src` at the centre of its k x k block, the
++     * blocks starting at (sx, sy) -- what NV3089 does for a resolve with INTERPOLATOR_FOH, and a box average for
++     * k = 2. Source texels beyond the edge repeat the edge. Both are R,G,B,A targets, `src` at least k times the
++     * size of the rectangle it is read for. Returns 0 on success. The engine keeps a resolve out of a surface it
++     * holds at sample resolution (an antialiased target) on the GPU with it. */
++    int  (*color_target_resolve)(void* user, u32 dst, u32 dx, u32 dy, u32 src,
++                                 u32 sx, u32 sy, u32 w, u32 h, u32 k);
+ } rsx_draw_backend;
+ 
+ /* ---- the engine --------------------------------------------------------- */
+@@ -301,9 +310,10 @@ void rsx_draw_engine_note_flip(u32 buffer_id);
+  * out with the same pitch take part; anything else is left alone. */
+ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32 h);
+ /* Scaled blit out of a supersampled colour surface, straight into guest memory; see the definition.
+- * Returns 1 when handled. */
++ * `linear`: the blit interpolates (INTERPOLATOR_FOH) from a source origin at the texel corner, which a resolve
++ * out of a surface held at sample resolution needs to be done on the GPU. Returns 1 when handled. */
+ int rsx_draw_engine_resolve_read(u32 src_loc, u32 src_offset, u32 src_pitch, u32 ds, u32 dt,
+-                                 u32 dst_loc, u32 dst_offset, u32 dst_pitch, u32 out_w, u32 out_h);
++                                 u32 dst_loc, u32 dst_offset, u32 dst_pitch, u32 out_w, u32 out_h, int linear);
+ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32 h);
+ /* A 2D transfer is about to read or write guest bytes [offset, offset + bytes)
+  * on the CPU: any resolve the engine kept on the GPU there is stored into guest
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+index dec1669..5fe0300 100644
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -2300,7 +2300,7 @@ static void release_surfaces(void)
+ 
+ typedef enum {
+     ENG_REC_DRAW, ENG_REC_CLEAR_COLOR, ENG_REC_CLEAR_DS, ENG_REC_DEPTH_RESOLVE,
+-    ENG_REC_COLOR_SNAPSHOT
++    ENG_REC_COLOR_SNAPSHOT, ENG_REC_COLOR_RESOLVE
+ } EngRecKind;
+ 
+ typedef struct {
+@@ -2328,6 +2328,7 @@ static void release_surfaces(void)
+     float clear_depth;
+     u8    clear_stencil;
+     u32   resolve_dst;          /* snapshot/resolve destination texture */
++    u32   rs_sx, rs_sy, rs_k;   /* color_target_resolve: source block origin and size; dst rect in sc[] */
+ } EngRecord;
+ 
+ static EngRecord s_eng_rec[ENG_MAX_RECORDS];
+@@ -2345,6 +2346,7 @@ static void release_surfaces(void)
+ static id<MTLRenderPipelineState> s_eng_blit_pso;
+ static MTLPixelFormat             s_eng_blit_pso_fmt;
+ static id<MTLRenderPipelineState> s_eng_depth_pso;
++static id<MTLRenderPipelineState> s_eng_resolve_pso;
+ static id<MTLSamplerState>        s_eng_point_sampler;
+ static id<MTLRenderPipelineState> s_eng_fxaa_pso;
+ static id<MTLTexture>             s_loading_tex;      /* the boot "Loading..." text */
+@@ -2433,6 +2435,18 @@ static void release_surfaces(void)
+ "    if (horz) fuv.y += finalOff * stepLen; else fuv.x += finalOff * stepLen;\n"
+ "    return float4(src.sample(s, fuv).rgb, cM.a);\n"
+ "}\n"
++"/* color_target_resolve: the linear sample at the centre of this pixel's k x k block of the source, the blocks\n"
++"   starting at (a.xy); the destination rectangle starts at (a.zw), the source is b.yz texels, b.x is k. The\n"
++"   sampler clamps to the edge. */\n"
++"fragment float4 eng_resolve_fs(BOut i [[stage_in]],\n"
++"                               texture2d<float> src [[texture(0)]],\n"
++"                               sampler s [[sampler(0)]],\n"
++"                               constant int4& a [[buffer(0)]],\n"
++"                               constant int4& b [[buffer(1)]]) {\n"
++"    float2 d = floor(i.pos.xy) - float2(a.zw);\n"
++"    float2 p = float2(a.xy) + d * float(b.x) + 0.5 * float(b.x);\n"
++"    return src.sample(s, p / float2(b.yz));\n"
++"}\n"
+ "fragment float eng_depth_fs(BOut i [[stage_in]],\n"
+ "                            depth2d<float> src [[texture(0)]],\n"
+ "                            sampler s [[sampler(0)]]) {\n"
+@@ -2584,6 +2598,7 @@ static void eng_shutdown(void* user)
+     s_eng_helper_lib = nil;
+     s_eng_blit_pso = nil;
+     s_eng_depth_pso = nil;
++    s_eng_resolve_pso = nil;
+     s_eng_point_sampler = nil;
+     s_eng_fxaa_pso = nil;
+     s_loading_tex = nil;
+@@ -2711,6 +2726,44 @@ static u32 eng_color_snapshot(void* user, u32 surface)
+     return copy;
+ }
+ 
++/* A 1/k downscale of one colour target into a rectangle of another, a record in the stream so it sees the
++ * draws before it and is seen by the ones after: one pass that samples the source linearly at the centre of
++ * each destination pixel's block. */
++static int eng_color_target_resolve(void* user, u32 dst, u32 dx, u32 dy, u32 src,
++                                    u32 sx, u32 sy, u32 w, u32 h, u32 k)
++{
++    (void)user;
++    id<MTLTexture> d = eng_obj(dst);
++    id<MTLTexture> t = eng_obj(src);
++    if (!d || !t || dst == src || !s_eng_helper_lib || !w || !h || k < 2u || k > 4u ||
++        [d pixelFormat] != MTLPixelFormatRGBA8Unorm || [t pixelFormat] != MTLPixelFormatRGBA8Unorm ||
++        [d textureType] != MTLTextureType2D || [t textureType] != MTLTextureType2D ||
++        [d sampleCount] != 1 || [t sampleCount] != 1 ||
++        dx + w > [d width] || dy + h > [d height] || s_eng_rec_count >= ENG_MAX_RECORDS)
++        return -1;
++    if (!s_eng_resolve_pso) {
++        MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
++        pd.vertexFunction   = [s_eng_helper_lib newFunctionWithName:@"eng_fullscreen_vs"];
++        pd.fragmentFunction = [s_eng_helper_lib newFunctionWithName:@"eng_resolve_fs"];
++        pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
++        NSError* err = nil;
++        s_eng_resolve_pso = [s_dev newRenderPipelineStateWithDescriptor:pd error:&err];
++        if (!s_eng_resolve_pso) {
++            fprintf(stderr, "[rsx engine/metal] resolve pipeline failed: %s\n",
++                    [[err localizedDescription] UTF8String]);
++            return -1;
++        }
++    }
++    EngRecord* r = &s_eng_rec[s_eng_rec_count++];
++    memset(r, 0, sizeof *r);
++    r->kind = ENG_REC_COLOR_RESOLVE;
++    r->rt[0] = src;
++    r->resolve_dst = dst;
++    r->sc[0] = dx; r->sc[1] = dy; r->sc[2] = w; r->sc[3] = h;
++    r->rs_sx = sx; r->rs_sy = sy; r->rs_k = k;
++    return 0;
++}
++
+ static u32 eng_depth_target_create(void* user, u32 w, u32 h)
+ {
+     (void)user;
+@@ -3200,6 +3253,32 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+             [copy endEncoding];
+             continue;
+         }
++        if (s_eng_rec[i].kind == ENG_REC_COLOR_RESOLVE) {
++            const EngRecord* r = &s_eng_rec[i++];
++            id<MTLTexture> src = eng_obj(r->rt[0]);
++            id<MTLTexture> dst = eng_obj(r->resolve_dst);
++            if (!src || !dst || !s_eng_resolve_pso) { s_eng_dropped++; continue; }
++            MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
++            rp.colorAttachments[0].texture     = dst;
++            rp.colorAttachments[0].loadAction  = MTLLoadActionLoad;      /* the other tiles of the picture stay */
++            rp.colorAttachments[0].storeAction = MTLStoreActionStore;
++            id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
++            if (!e) { s_eng_dropped++; continue; }
++            const int32_t a[4] = { (int32_t)r->rs_sx, (int32_t)r->rs_sy, (int32_t)r->sc[0], (int32_t)r->sc[1] };
++            const int32_t b[4] = { (int32_t)r->rs_k, (int32_t)[src width], (int32_t)[src height], 0 };
++            MTLViewport vp = { 0.0, 0.0, (double)[dst width], (double)[dst height], 0.0, 1.0 };
++            MTLScissorRect sr = { r->sc[0], r->sc[1], r->sc[2], r->sc[3] };
++            [e setRenderPipelineState:s_eng_resolve_pso];
++            [e setViewport:vp];
++            [e setScissorRect:sr];
++            [e setFragmentTexture:src atIndex:0];
++            [e setFragmentSamplerState:s_default_sampler atIndex:0];
++            [e setFragmentBytes:a length:sizeof a atIndex:0];
++            [e setFragmentBytes:b length:sizeof b atIndex:1];
++            [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
++            [e endEncoding];
++            continue;
++        }
+         if (s_eng_rec[i].kind == ENG_REC_DEPTH_RESOLVE) {
+             const EngRecord* r = &s_eng_rec[i++];
+             id<MTLTexture> src = eng_obj(r->depth);
+@@ -3233,7 +3312,8 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+         u8 cstencil = 0;
+         while (i < s_eng_rec_count && s_eng_rec[i].kind != ENG_REC_DRAW &&
+                s_eng_rec[i].kind != ENG_REC_DEPTH_RESOLVE &&
+-               s_eng_rec[i].kind != ENG_REC_COLOR_SNAPSHOT) {
++               s_eng_rec[i].kind != ENG_REC_COLOR_SNAPSHOT &&
++               s_eng_rec[i].kind != ENG_REC_COLOR_RESOLVE) {
+             const EngRecord* r = &s_eng_rec[i];
+             if (r->kind == ENG_REC_CLEAR_COLOR) {
+                 u32 k = 0;
+@@ -3688,6 +3768,7 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
+     .depth_snapshot       = eng_depth_snapshot,
+     .depth_readback       = eng_depth_readback,
+     .color_snapshot       = eng_color_snapshot,
++    .color_target_resolve = eng_color_target_resolve,
+     .pipeline_create      = eng_pipeline_create,
+     .pipeline_release     = eng_pipeline_release,
+     .bind_targets         = eng_bind_targets,
+diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
+index f06abad..2378b18 100644
+--- a/libs/video/rsx_vulkan_backend.c
++++ b/libs/video/rsx_vulkan_backend.c
+@@ -2641,6 +2641,59 @@ static int vk_eng_color_target_copy(void* user, u32 dst, u32 dx, u32 dy, u32 src
+     return 0;
+ }
+ 
++/* One rectangle of `o` to one of `d` through a linear blit: a texel block downscaled to the pixel(s) it covers. */
++static void vk_eng_blit_rect(vk_eng_obj* o, vk_eng_obj* d, u32 x0, u32 y0, u32 x1, u32 y1,
++                             u32 dx0, u32 dy0, u32 dx1, u32 dy1)
++{
++    VkImageBlit blit = {
++        .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
++        .srcOffsets = { { (int32_t)x0, (int32_t)y0, 0 }, { (int32_t)x1, (int32_t)y1, 1 } },
++        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
++        .dstOffsets = { { (int32_t)dx0, (int32_t)dy0, 0 }, { (int32_t)dx1, (int32_t)dy1, 1 } },
++    };
++    pvkCmdBlitImage(s_vk.cmd, o->im.img, VK_IMAGE_LAYOUT_GENERAL, d->im.img, VK_IMAGE_LAYOUT_GENERAL, 1, &blit,
++                    VK_FILTER_LINEAR);
++}
++
++/* A 1/k downscale of a rectangle of one colour target into another, recorded into the batch: each destination
++ * pixel is the linear sample at the centre of its k x k block of the source (a box average for k = 2). A linear
++ * blit does exactly that for the blocks that lie inside the source, as one command; a block that reaches past the
++ * edge (the +1 texel source origin of a resolve tile shifts the last block of the picture out of it) is
++ * a blit of the texels that remain, which is the same as the edge repeating. */
++static int vk_eng_color_target_resolve(void* user, u32 dst, u32 dx, u32 dy, u32 src,
++                                       u32 sx, u32 sy, u32 w, u32 h, u32 k)
++{
++    (void)user;
++    vk_eng_obj* d = vk_eng_get(dst, VK_ENG_COLOR);
++    vk_eng_obj* o = vk_eng_get(src, VK_ENG_COLOR);
++    if (!d || !o || dst == src || d->fmt != VK_FORMAT_R8G8B8A8_UNORM || o->fmt != d->fmt || !w || !h ||
++        k < 2u || k > 4u || sx >= o->w || sy >= o->h || dx + w > d->w || dy + h > d->h)
++        return -1;
++    const u32 nx = (o->w - sx) / k < w ? (o->w - sx) / k : w;
++    const u32 ny = (o->h - sy) / k < h ? (o->h - sy) / k : h;
++    if ((w - nx) + (h - ny) > 8u || vk_rec_begin()) return -1;      /* mostly outside: the CPU copy does it */
++    vk_barrier_image(o->im.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
++    vk_barrier_image(d->im.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
++    if (nx && ny)
++        vk_eng_blit_rect(o, d, sx, sy, sx + nx * k, sy + ny * k, dx, dy, dx + nx, dy + ny);
++    for (u32 c = nx; c < w; c++) {                                    /* columns whose block crosses the edge */
++        const u32 x0 = sx + c * k < o->w ? sx + c * k : o->w - 1u;
++        const u32 x1 = sx + (c + 1u) * k < o->w ? sx + (c + 1u) * k : o->w;
++        if (ny) vk_eng_blit_rect(o, d, x0, sy, x1, sy + ny * k, dx + c, dy, dx + c + 1u, dy + ny);
++    }
++    for (u32 r = ny; r < h; r++) {                                    /* rows, and the corner pixels */
++        const u32 y0 = sy + r * k < o->h ? sy + r * k : o->h - 1u;
++        const u32 y1 = sy + (r + 1u) * k < o->h ? sy + (r + 1u) * k : o->h;
++        if (nx) vk_eng_blit_rect(o, d, sx, y0, sx + nx * k, y1, dx, dy + r, dx + nx, dy + r + 1u);
++        for (u32 c = nx; c < w; c++) {
++            const u32 x0 = sx + c * k < o->w ? sx + c * k : o->w - 1u;
++            const u32 x1 = sx + (c + 1u) * k < o->w ? sx + (c + 1u) * k : o->w;
++            vk_eng_blit_rect(o, d, x0, y0, x1, y1, dx + c, dy + r, dx + c + 1u, dy + r + 1u);
++        }
++    }
++    return 0;
++}
++
+ /* ---- E3: textures ---------------------------------------------------------
+  * The engine decodes every level to host rows (rsx_texture_decode) and hands
+  * them over one upload each; the crossbar is a property of the view, so it
+@@ -3588,6 +3641,7 @@ static const rsx_draw_backend s_vk_engine_backend = {
+     .depth_readback       = vk_eng_depth_readback,
+     .color_target_write   = vk_eng_color_target_write,
+     .color_target_copy    = vk_eng_color_target_copy,
++    .color_target_resolve = vk_eng_color_target_resolve,
+ };
+ 
+ static rsx_backend s_vulkan_backend = {
