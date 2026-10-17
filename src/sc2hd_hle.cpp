@@ -53,7 +53,7 @@ namespace {
 constexpr uint64_t CELL_OK                = 0;
 constexpr uint64_t CELL_FIBER_ERROR_INVAL = 0x80760002u;
 constexpr uint64_t CELL_FIBER_ERROR_NOMEM = 0x80760004u;
-constexpr uint64_t CELL_FIBER_ERROR_STAT  = 0x80760009u;
+constexpr uint64_t CELL_FIBER_ERROR_STAT  = 0x8076000Fu;
 
 /* SDK struct sizes (bytes). */
 constexpr uint32_t SIZEOF_SCHED_ATTR = 256;
