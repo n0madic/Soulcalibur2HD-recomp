@@ -54,6 +54,8 @@ top of it. When a PR is merged into the pinned revision its file is deleted.
 | `0015-escape-pause` | Esc is the keyboard's START (pause menu) instead of closing the window |
 | `0016-unlock-in-memory` | `SC2HD_UNLOCK` (the launcher's `--unlock`): save flags set in memory only |
 | `0017-gpu-resolve-downscale` | a resolve out of a surface held at sample resolution is a GPU downscale (Metal, Vulkan) |
+| `0018-windows-timezone` | `sys_time_get_timezone` through `GetTimeZoneInformation` (no `_get_timezone` in msvcrt.dll) |
+| `0019-shadow-compare-direction` | a depth-texture comparison is `depth FUNC reference`, not `reference FUNC depth` (shadows came out inverted, every backend) |
 
 ## SPURS queues
 The port has no Sony firmware code. cellSpurs is the toolkit's HLE; the one part it cannot do, the lock-free work queues the game
