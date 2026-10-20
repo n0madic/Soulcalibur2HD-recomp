@@ -13,7 +13,7 @@ cellAudio: diagnostics, and a mix paced on the block clock on Windows.
 ---
 
 diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
-index b51fb7c..c83b8d7 100644
+index 9e3a2d96..54564acf 100644
 --- a/libs/audio/cellAudio.c
 +++ b/libs/audio/cellAudio.c
 @@ -13,6 +13,7 @@
@@ -32,7 +32,7 @@ index b51fb7c..c83b8d7 100644
      return 0;
  }
  
-@@ -373,7 +375,7 @@ static int audio_backend_room(void)
+@@ -380,7 +382,7 @@ static int audio_backend_room(void)
      if (FAILED(hr)) {
          /* Device gone (AUDCLNT_E_DEVICE_INVALIDATED on a default-device
           * change, sleep, ...): pace on the clock rather than spin. */
@@ -41,7 +41,7 @@ index b51fb7c..c83b8d7 100644
              fprintf(stderr, "[cellAudio] GetCurrentPadding failed 0x%08lX -- clock pacing%c", (unsigned long)hr, 10);
          return -1;
      }
-@@ -534,6 +536,26 @@ static void audio_notify_event_queues(void)
+@@ -541,6 +543,26 @@ static void audio_notify_event_queues(void)
      }
  }
  
@@ -68,7 +68,7 @@ index b51fb7c..c83b8d7 100644
  #ifdef _WIN32
  static unsigned __stdcall audio_mix_thread_func(void* arg)
  {
-@@ -545,39 +567,55 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+@@ -552,39 +574,55 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
       * WASAPI buffer can never reach, so it mixed ~225 blocks/s and the device
       * dropped the surplus: 20% of the audio thrown away, and a guest mixer
       * (GH3's FMOD) that could not keep ahead of the read index played gaps.
@@ -147,7 +147,7 @@ index b51fb7c..c83b8d7 100644
          audio_backend_submit(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES);
          /* AUDIO_RATE=1: blocks mixed vs real time, and frames dropped. */
          { static int on = -1; if (on < 0) on = getenv("AUDIO_RATE") ? 1 : 0;
-@@ -599,6 +637,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+@@ -606,6 +644,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
          audio_notify_event_queues();
      }
  
@@ -155,7 +155,7 @@ index b51fb7c..c83b8d7 100644
      printf("[cellAudio] Mixing thread stopped\n");
      return 0;
  }
-@@ -608,10 +647,18 @@ static void* audio_mix_thread_func(void* arg)
+@@ -615,10 +654,18 @@ static void* audio_mix_thread_func(void* arg)
      (void)arg;
      printf("[cellAudio] Mixing thread started\n");
  
@@ -174,7 +174,7 @@ index b51fb7c..c83b8d7 100644
  
          u32 queued = audio_backend_queued_samples();
          if (queued > CELL_AUDIO_BLOCK_SAMPLES * 4) {
-@@ -1074,7 +1121,7 @@ s32 cellAudioGetPortConfig(u32 portNum, CellAudioPortConfig* config)
+@@ -1081,7 +1128,7 @@ s32 cellAudioGetPortConfig(u32 portNum, CellAudioPortConfig* config)
      vm_write32(cfg + 24, port->buf_size);                                   /* portSize */
      vm_write32(cfg + 28, (u32)port->port_addr);                             /* portAddr */
  
@@ -184,7 +184,7 @@ index b51fb7c..c83b8d7 100644
                  portNum, port->running ? "RUN" : "READY",
                  (u32)port->port_addr, (u32)port->read_idx_addr); }
 diff --git a/libs/codec/cellAdec.c b/libs/codec/cellAdec.c
-index 3da7017..2fd3582 100644
+index 3da70179..2fd35826 100644
 --- a/libs/codec/cellAdec.c
 +++ b/libs/codec/cellAdec.c
 @@ -7,6 +7,7 @@

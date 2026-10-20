@@ -8,7 +8,7 @@ Dock icon of a bare executable. Without the resource or the hook nothing changes
 ---
 
 diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
-index 294a3aa..02c6c6f 100644
+index a9f9489d..9589348c 100644
 --- a/libs/video/rsx_d3d12_backend.c
 +++ b/libs/video/rsx_d3d12_backend.c
 @@ -520,6 +520,8 @@ static HWND create_window(u32 width, u32 height, const char* title)
@@ -21,7 +21,7 @@ index 294a3aa..02c6c6f 100644
      RegisterClassExA(&wc);
  
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index c5f1a03..fba6909 100644
+index d7088392..2cafe247 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
 @@ -598,10 +598,14 @@ - (void)quit:(id)sender { (void)sender; atomic_store(&s_closed, 1); }
@@ -40,7 +40,7 @@ index c5f1a03..fba6909 100644
          s_quit_target = [RsxQuitTarget new];
          NSMenu* bar = [NSMenu new];
 diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
-index 32e8a95..355cf09 100644
+index 32e8a959..355cf096 100644
 --- a/libs/video/rsx_null_backend.c
 +++ b/libs/video/rsx_null_backend.c
 @@ -243,6 +243,8 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)

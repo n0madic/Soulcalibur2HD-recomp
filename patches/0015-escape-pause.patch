@@ -7,10 +7,10 @@ Esc pauses: on the keyboard Esc is START (the game's pause menu), not quit.
 ---
 
 diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
-index 947b7b7..736a8f1 100644
+index b217c4e5..d94791cb 100644
 --- a/libs/input/cellPad.c
 +++ b/libs/input/cellPad.c
-@@ -150,6 +150,7 @@ static int pad_key_down(int key) { return (GetAsyncKeyState(key) & 0x8000) != 0;
+@@ -195,6 +195,7 @@ static int pad_key_down(int key) { return (GetAsyncKeyState(key) & 0x8000) != 0;
  #define PADKEY_2 '2'
  #define PADKEY_RETURN VK_RETURN
  #define PADKEY_TAB VK_TAB
@@ -18,7 +18,7 @@ index 947b7b7..736a8f1 100644
  #elif defined(__APPLE__)
  /* macOS: virtual key codes (Carbon HIToolbox/Events.h kVK_*), polled with CGEventSourceKeyState,
   * which needs no event tap and no window. "Focused" is NSApplication.isActive of this process,
-@@ -186,6 +187,7 @@ static int pad_key_down(int key)
+@@ -231,6 +232,7 @@ static int pad_key_down(int key)
  #define PADKEY_2 19
  #define PADKEY_RETURN 36
  #define PADKEY_TAB 48
@@ -26,7 +26,7 @@ index 947b7b7..736a8f1 100644
  #elif PAD_BACKEND_SDL2
  /* Everywhere else the keyboard is SDL's: scancodes are physical keys, like the macOS codes above. The state is kept
   * current by whoever pumps SDL's events (the window of the RSX backend); without a video subsystem nothing is ever
-@@ -212,6 +214,7 @@ static int pad_key_down(int key)
+@@ -257,6 +259,7 @@ static int pad_key_down(int key)
  #define PADKEY_2 SDL_SCANCODE_2
  #define PADKEY_RETURN SDL_SCANCODE_RETURN
  #define PADKEY_TAB SDL_SCANCODE_TAB
@@ -34,7 +34,7 @@ index 947b7b7..736a8f1 100644
  #endif
  
  #if defined(_WIN32) || defined(__APPLE__) || PAD_BACKEND_SDL2
-@@ -241,6 +244,7 @@ static void pad_poll_keyboard(void)
+@@ -286,6 +289,7 @@ static void pad_poll_keyboard(void)
          { PADKEY_Q,      CELL_PAD_CTRL_L1 },      { PADKEY_W,     CELL_PAD_CTRL_R1 },
          { PADKEY_1,      CELL_PAD_CTRL_L2 },      { PADKEY_2,     CELL_PAD_CTRL_R2 },
          { PADKEY_RETURN, CELL_PAD_CTRL_START },   { PADKEY_TAB,   CELL_PAD_CTRL_SELECT },
@@ -43,7 +43,7 @@ index 947b7b7..736a8f1 100644
  
      u16 btns = 0;
 diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
-index 02c6c6f..95c2862 100644
+index 9589348c..f89fb1fc 100644
 --- a/libs/video/rsx_d3d12_backend.c
 +++ b/libs/video/rsx_d3d12_backend.c
 @@ -503,11 +503,7 @@ static LRESULT CALLBACK d3d12_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -60,7 +60,7 @@ index 02c6c6f..95c2862 100644
      return DefWindowProcA(hwnd, msg, wp, lp);
  }
 diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
-index 355cf09..c57f009 100644
+index 355cf096..c57f009a 100644
 --- a/libs/video/rsx_null_backend.c
 +++ b/libs/video/rsx_null_backend.c
 @@ -93,11 +93,7 @@ static LRESULT CALLBACK null_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -77,10 +77,10 @@ index 355cf09..c57f009 100644
  
      return DefWindowProcA(hwnd, msg, wp, lp);
 diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
-index 08226ce..f06abad 100644
+index f8885116..da43ce18 100644
 --- a/libs/video/rsx_vulkan_backend.c
 +++ b/libs/video/rsx_vulkan_backend.c
-@@ -3817,7 +3817,6 @@ int rsx_vulkan_backend_pump_messages(void)
+@@ -4013,7 +4013,6 @@ int rsx_vulkan_backend_pump_messages(void)
      SDL_Event e;
      while (SDL_PollEvent(&e)) {
          if (e.type == SDL_QUIT) quit = 1;

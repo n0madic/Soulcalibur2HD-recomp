@@ -12,10 +12,10 @@ Metal backend: menu, key events, anti-aliasing and window handling.
 ---
 
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index 3c534a0..c5f1a03 100644
+index 32f0b958..d7088392 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
-@@ -81,6 +81,16 @@
+@@ -82,6 +82,15 @@
  #if !TARGET_OS_IPHONE
  static id                  s_window_close_observer;
  #endif
@@ -23,16 +23,15 @@ index 3c534a0..c5f1a03 100644
 + * by the present path, which sizes the drawable to it. 0 until the first pump. */
 +static volatile u32        s_win_px_w, s_win_px_h;
 +
-+/* Image quality. PS3RECOMP_METAL_AF=1..16 is the anisotropic filtering limit applied to every
-+ * linearly filtered game texture; PS3RECOMP_METAL_FXAA=0|1 runs an FXAA pass over the finished frame
-+ * on its way to the window (draw-engine path). Both default to on. */
++/* Image quality of the old live-draw path. PS3RECOMP_METAL_AF=1..16 is the anisotropic filtering limit applied to
++ * every linearly filtered game texture there (default 16). The draw engine has the toolkit's own: FXAA and
++ * sharpening in the present (PS3_AA=fxaa, PS3_SHARPEN) and PS3_ANISO. */
 +#define MTL_AF_DEFAULT   16
 +static u32                 s_aniso = MTL_AF_DEFAULT;
-+static int                 s_fxaa  = 1;
  static int                 s_ready;
  static u32                 s_width  = 1280;
  static u32                 s_height = 720;
-@@ -578,12 +588,42 @@ static void window_close_observer_start(NSWindow* window)
+@@ -579,12 +588,42 @@ static void window_close_observer_start(NSWindow* window)
          }];
  }
  
@@ -50,7 +49,6 @@ index 3c534a0..c5f1a03 100644
  {
      [NSApplication sharedApplication];
      [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
--
 +    {
 +        s_quit_target = [RsxQuitTarget new];
 +        NSMenu* bar = [NSMenu new];
@@ -64,7 +62,7 @@ index 3c534a0..c5f1a03 100644
 +        [appItem setSubmenu:appMenu];
 +        [NSApp setMainMenu:bar];
 +    }
-+
+ 
 +    /* PS3RECOMP_METAL_WINDOW=<w>x<h>: initial content size in points (default: the game's size). */
      NSRect frame = NSMakeRect(0, 0, (CGFloat)s_width, (CGFloat)s_height);
 +    {
@@ -76,7 +74,7 @@ index 3c534a0..c5f1a03 100644
      s_window = [[NSWindow alloc]
          initWithContentRect:frame
                    styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-@@ -642,6 +682,7 @@ static int create_placeholders(void)
+@@ -643,6 +682,7 @@ static int create_placeholders(void)
      sd.magFilter = MTLSamplerMinMagFilterLinear;
      sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
      sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
@@ -84,7 +82,7 @@ index 3c534a0..c5f1a03 100644
      s_default_sampler = [s_dev newSamplerStateWithDescriptor:sd];
      if (!s_default_sampler) return -1;
  
-@@ -1298,6 +1339,8 @@ static int samp_slot_for(const rsx_texture_state* t)
+@@ -1299,6 +1339,8 @@ static int samp_slot_for(const rsx_texture_state* t)
      if (max_lod < min_lod) max_lod = min_lod;
      sd.lodMinClamp = min_lod;
      sd.lodMaxClamp = max_lod;
@@ -93,90 +91,7 @@ index 3c534a0..c5f1a03 100644
      sd.sAddressMode = gcm_wrap_to_metal(t->address);
      sd.tAddressMode = gcm_wrap_to_metal(t->address >> 8);
      sd.rAddressMode = gcm_wrap_to_metal(t->address >> 16);
-@@ -2287,6 +2330,8 @@ static void release_surfaces(void)
- static MTLPixelFormat             s_eng_blit_pso_fmt;
- static id<MTLRenderPipelineState> s_eng_depth_pso;
- static id<MTLSamplerState>        s_eng_point_sampler;
-+static id<MTLRenderPipelineState> s_eng_fxaa_pso;
-+static MTLPixelFormat             s_eng_fxaa_pso_fmt;
- 
- static NSString* const kEngHelperMSL = @
- "#include <metal_stdlib>\n"
-@@ -2303,6 +2348,73 @@ static void release_surfaces(void)
- "                            sampler s [[sampler(0)]]) {\n"
- "    return src.sample(s, i.uv);\n"
- "}\n"
-+"static float fxaa_luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }\n"
-+"fragment float4 eng_fxaa_fs(BOut i [[stage_in]],\n"
-+"                            texture2d<float> src [[texture(0)]],\n"
-+"                            sampler s [[sampler(0)]]) {\n"
-+"    const float EDGE_MIN = 0.0312, EDGE_REL = 0.125, SUBPIX = 0.75;\n"
-+"    const float Q[12] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 4.0, 8.0};\n"
-+"    float2 px = 1.0 / float2(src.get_width(), src.get_height());\n"
-+"    float2 uv = i.uv;\n"
-+"    float4 cM = src.sample(s, uv);\n"
-+"    float lM  = fxaa_luma(cM.rgb);\n"
-+"    float lN  = fxaa_luma(src.sample(s, uv + float2(0.0, -px.y)).rgb);\n"
-+"    float lS  = fxaa_luma(src.sample(s, uv + float2(0.0,  px.y)).rgb);\n"
-+"    float lW  = fxaa_luma(src.sample(s, uv + float2(-px.x, 0.0)).rgb);\n"
-+"    float lE  = fxaa_luma(src.sample(s, uv + float2( px.x, 0.0)).rgb);\n"
-+"    float lMax = max(lM, max(max(lN, lS), max(lW, lE)));\n"
-+"    float lMin = min(lM, min(min(lN, lS), min(lW, lE)));\n"
-+"    float range = lMax - lMin;\n"
-+"    if (range < max(EDGE_MIN, lMax * EDGE_REL)) return cM;\n"
-+"    float lNW = fxaa_luma(src.sample(s, uv + float2(-px.x, -px.y)).rgb);\n"
-+"    float lNE = fxaa_luma(src.sample(s, uv + float2( px.x, -px.y)).rgb);\n"
-+"    float lSW = fxaa_luma(src.sample(s, uv + float2(-px.x,  px.y)).rgb);\n"
-+"    float lSE = fxaa_luma(src.sample(s, uv + float2( px.x,  px.y)).rgb);\n"
-+"    float edgeH = abs(-2.0 * lW + lNW + lSW) + 2.0 * abs(-2.0 * lM + lN + lS) + abs(-2.0 * lE + lNE + lSE);\n"
-+"    float edgeV = abs(-2.0 * lN + lNW + lNE) + 2.0 * abs(-2.0 * lM + lW + lE) + abs(-2.0 * lS + lSW + lSE);\n"
-+"    bool horz = edgeH >= edgeV;\n"
-+"    float l1 = horz ? lN : lW;\n"
-+"    float l2 = horz ? lS : lE;\n"
-+"    float g1 = l1 - lM, g2 = l2 - lM;\n"
-+"    bool first = abs(g1) >= abs(g2);\n"
-+"    float gradScaled = 0.25 * max(abs(g1), abs(g2));\n"
-+"    float stepLen = horz ? px.y : px.x;\n"
-+"    float lAvg;\n"
-+"    if (first) { stepLen = -stepLen; lAvg = 0.5 * (l1 + lM); } else { lAvg = 0.5 * (l2 + lM); }\n"
-+"    float2 cuv = uv;\n"
-+"    if (horz) cuv.y += stepLen * 0.5; else cuv.x += stepLen * 0.5;\n"
-+"    float2 off = horz ? float2(px.x, 0.0) : float2(0.0, px.y);\n"
-+"    float2 uv1 = cuv - off, uv2 = cuv + off;\n"
-+"    float e1 = fxaa_luma(src.sample(s, uv1).rgb) - lAvg;\n"
-+"    float e2 = fxaa_luma(src.sample(s, uv2).rgb) - lAvg;\n"
-+"    bool r1 = abs(e1) >= gradScaled, r2 = abs(e2) >= gradScaled;\n"
-+"    if (!r1) uv1 -= off;\n"
-+"    if (!r2) uv2 += off;\n"
-+"    for (int k = 2; k < 12 && !(r1 && r2); k++) {\n"
-+"        if (!r1) e1 = fxaa_luma(src.sample(s, uv1).rgb) - lAvg;\n"
-+"        if (!r2) e2 = fxaa_luma(src.sample(s, uv2).rgb) - lAvg;\n"
-+"        r1 = abs(e1) >= gradScaled; r2 = abs(e2) >= gradScaled;\n"
-+"        if (!r1) uv1 -= off * Q[k];\n"
-+"        if (!r2) uv2 += off * Q[k];\n"
-+"    }\n"
-+"    float d1 = horz ? (uv.x - uv1.x) : (uv.y - uv1.y);\n"
-+"    float d2 = horz ? (uv2.x - uv.x) : (uv2.y - uv.y);\n"
-+"    bool dir1 = d1 < d2;\n"
-+"    float dMin = min(d1, d2);\n"
-+"    float thick = d1 + d2;\n"
-+"    float pixOff = -dMin / thick + 0.5;\n"
-+"    bool centerSmaller = lM < lAvg;\n"
-+"    bool good = ((dir1 ? e1 : e2) < 0.0) != centerSmaller;\n"
-+"    float finalOff = good ? pixOff : 0.0;\n"
-+"    float lAround = (1.0 / 12.0) * (2.0 * (lN + lS + lW + lE) + lNW + lNE + lSW + lSE);\n"
-+"    float sp1 = clamp(abs(lAround - lM) / range, 0.0, 1.0);\n"
-+"    float sp2 = (-2.0 * sp1 + 3.0) * sp1 * sp1;\n"
-+"    float spFinal = sp2 * sp2 * SUBPIX;\n"
-+"    finalOff = max(finalOff, spFinal);\n"
-+"    float2 fuv = uv;\n"
-+"    if (horz) fuv.y += finalOff * stepLen; else fuv.x += finalOff * stepLen;\n"
-+"    return float4(src.sample(s, fuv).rgb, cM.a);\n"
-+"}\n"
- "fragment float eng_depth_fs(BOut i [[stage_in]],\n"
- "                            depth2d<float> src [[texture(0)]],\n"
- "                            sampler s [[sampler(0)]]) {\n"
-@@ -2380,6 +2492,7 @@ static MTLPixelFormat eng_pixel_format(rsx_be_format f)
+@@ -2537,6 +2579,7 @@ static MTLPixelFormat eng_pixel_format(rsx_be_format f)
  /* ---- staging ------------------------------------------------------------- */
  
  static void eng_encode_and_commit(id<MTLTexture> present_dst);
@@ -184,70 +99,18 @@ index 3c534a0..c5f1a03 100644
  
  static int eng_stage_reserve(u32 bytes, u32* out_off)
  {
-@@ -2454,6 +2567,7 @@ static void eng_shutdown(void* user)
-     s_eng_blit_pso = nil;
-     s_eng_depth_pso = nil;
-     s_eng_point_sampler = nil;
-+    s_eng_fxaa_pso = nil;
-     s_eng_active = 0;
-     s_eng_encoding_failed = 0;
-     s_eng_checked_completed = 0;
-@@ -2813,6 +2927,7 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
-                                    : MTLSamplerMipFilterNearest;
-     sd.lodMinClamp = d->min_lod;
-     sd.lodMaxClamp = d->max_lod;
-+    if (d->min_linear && d->mag_linear) sd.maxAnisotropy = s_aniso;
-     sd.sAddressMode = gcm_wrap_to_metal(d->wrap_s);
-     sd.tAddressMode = gcm_wrap_to_metal(d->wrap_t);
-     sd.rAddressMode = gcm_wrap_to_metal(d->wrap_r);
-@@ -3236,34 +3351,51 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
- 
- /* Put a surface on the drawable. A straight blit would need matching formats
-  * and sizes; a full-screen sample needs neither, and the guest's surfaces are
-- * routinely a different size from the window. */
-+ * routinely a different size from the window. With FXAA on, the same full-screen
-+ * pass is the anti-aliasing filter. The picture keeps its aspect ratio: it is
-+ * fitted into the drawable and centred, and the rest is black (letterbox). */
-+static id<MTLRenderPipelineState> eng_display_pso(MTLPixelFormat fmt, int fxaa)
-+{
-+    id<MTLRenderPipelineState> __strong* pso = fxaa ? &s_eng_fxaa_pso : &s_eng_blit_pso;
-+    MTLPixelFormat* have = fxaa ? &s_eng_fxaa_pso_fmt : &s_eng_blit_pso_fmt;
-+    if (*pso && *have == fmt) return *pso;
-+    MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
-+    pd.vertexFunction   = [s_eng_helper_lib newFunctionWithName:@"eng_fullscreen_vs"];
-+    pd.fragmentFunction = [s_eng_helper_lib newFunctionWithName:fxaa ? @"eng_fxaa_fs" : @"eng_blit_fs"];
-+    pd.colorAttachments[0].pixelFormat = fmt;
-+    NSError* err = nil;
-+    *pso = [s_dev newRenderPipelineStateWithDescriptor:pd error:&err];
-+    if (!*pso) {
-+        fprintf(stderr, "[rsx engine/metal] present pipeline failed: %s\n",
-+                [[err localizedDescription] UTF8String]);
-+        return nil;
-+    }
-+    *have = fmt;
-+    return *pso;
-+}
-+
+@@ -3541,7 +3584,8 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+  *
+  * With PS3_AA=fxaa the surface goes through FXAA first, at its own size; with
+  * PS3_SHARPEN this pass sharpens it as it samples. Either one that is off or
+- * fails is skipped. */
++ * fails is skipped. The picture keeps its aspect ratio: it is fitted into the drawable and
++ * centred, and the rest is black (letterbox). */
  static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
                                  id<MTLTexture> dst)
  {
-     if (!src || !dst || !s_eng_helper_lib) return;
--    if (!s_eng_blit_pso || s_eng_blit_pso_fmt != [dst pixelFormat]) {
--        MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
--        pd.vertexFunction   = [s_eng_helper_lib newFunctionWithName:@"eng_fullscreen_vs"];
--        pd.fragmentFunction = [s_eng_helper_lib newFunctionWithName:@"eng_blit_fs"];
--        pd.colorAttachments[0].pixelFormat = [dst pixelFormat];
--        NSError* err = nil;
--        s_eng_blit_pso = [s_dev newRenderPipelineStateWithDescriptor:pd error:&err];
--        if (!s_eng_blit_pso) {
--            fprintf(stderr, "[rsx engine/metal] present pipeline failed: %s\n",
--                    [[err localizedDescription] UTF8String]);
--            return;
--        }
--        s_eng_blit_pso_fmt = [dst pixelFormat];
--    }
-+    id<MTLRenderPipelineState> pso = eng_display_pso([dst pixelFormat], s_fxaa);
-+    if (!pso) return;
+@@ -3564,13 +3608,20 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+     }
      MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
      rp.colorAttachments[0].texture     = dst;
 -    rp.colorAttachments[0].loadAction  = MTLLoadActionDontCare;
@@ -256,21 +119,20 @@ index 3c534a0..c5f1a03 100644
      rp.colorAttachments[0].storeAction = MTLStoreActionStore;
      id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
      if (!e) return;
--    [e setRenderPipelineState:s_eng_blit_pso];
 +    const double dw = (double)[dst width], dh = (double)[dst height];
 +    const double sw = (double)[src width], sh = (double)[src height];
 +    const double fit = fmin(dw / sw, dh / sh);
 +    const double vw = floor(sw * fit + 0.5), vh = floor(sh * fit + 0.5);
 +    [e setViewport:(MTLViewport){floor((dw - vw) * 0.5), floor((dh - vh) * 0.5), vw, vh, 0.0, 1.0}];
-+    [e setRenderPipelineState:pso];
+     [e setRenderPipelineState:s_eng_blit_pso];
      [e setFragmentTexture:src atIndex:0];
 -    [e setFragmentSamplerState:s_eng_point_sampler atIndex:0];
 +    const int scaled = (vw != sw || vh != sh);
-+    [e setFragmentSamplerState:((s_fxaa || scaled) ? s_default_sampler : s_eng_point_sampler) atIndex:0];
-     [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-     [e endEncoding];
- }
-@@ -3290,6 +3422,14 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
++    [e setFragmentSamplerState:(scaled ? s_default_sampler : s_eng_point_sampler) atIndex:0];
+     /* The video out's gamma (cellVideoOutSetGamma, the title's brightness
+      * setting): out = in^gamma, as RPCS3's calibration pass applies it. The
+      * sharpening taps are one source texel apart. */
+@@ -3608,6 +3659,14 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
              if (s_headless) {
                  dst = s_offscreen;
              } else {
@@ -285,7 +147,7 @@ index 3c534a0..c5f1a03 100644
                  drawable = [s_layer nextDrawable];
                  if (!drawable) {           /* compositor is busy; skip */
                      dispatch_semaphore_signal(s_inflight);
-@@ -3334,6 +3474,7 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3665,6 +3724,7 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
                      fprintf(stderr, "[rsx engine/metal] command buffer failed: %s (code %ld)\n",
                              [[[cb error] localizedDescription] UTF8String], (long)[[cb error] code]);
              }
@@ -293,7 +155,7 @@ index 3c534a0..c5f1a03 100644
          }
  
          if (s_eng_dropped) {
-@@ -3347,14 +3488,10 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3678,14 +3738,10 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
      }
  }
  
@@ -311,7 +173,7 @@ index 3c534a0..c5f1a03 100644
      if ([src pixelFormat] != MTLPixelFormatRGBA8Unorm &&
          [src pixelFormat] != MTLPixelFormatBGRA8Unorm) return;
      size_t w = [src width], h = [src height];
-@@ -3378,11 +3515,39 @@ static void eng_dump_frame(id<MTLTexture> src)
+@@ -3709,11 +3765,39 @@ static void eng_dump_frame(id<MTLTexture> src)
              fwrite(rgb, 1, 3, f);
          }
          fclose(f);
@@ -333,7 +195,7 @@ index 3c534a0..c5f1a03 100644
 +
 +/* PS3RECOMP_METAL_PRESENT_DUMP=<dir> (headless only, the drawable cannot be read): every 120th
 + * presented frame as it leaves the display pass, FXAA included, to <dir>/present_<n>.ppm; with FXAA
-+ * on, the unfiltered surface goes next to it as present_<n>_raw.ppm. */
++ * on (PS3_AA=fxaa), the unfiltered surface goes next to it as present_<n>_raw.ppm. */
 +static void eng_dump_presented(id<MTLTexture> dst, id<MTLTexture> raw)
 +{
 +    const char* dir = getenv("PS3RECOMP_METAL_PRESENT_DUMP");
@@ -343,7 +205,7 @@ index 3c534a0..c5f1a03 100644
 +    char path[1024];
 +    snprintf(path, sizeof path, "%s/present_%05u.ppm", dir, frame);
 +    eng_write_ppm(dst, path);
-+    if (s_fxaa) {
++    if (s_eng_fxaa > 0) {
 +        snprintf(path, sizeof path, "%s/present_%05u_raw.ppm", dir, frame);
 +        eng_write_ppm(raw, path);
 +    }
@@ -352,7 +214,7 @@ index 3c534a0..c5f1a03 100644
  static void eng_present(void* user, u32 surface)
  {
      (void)user;
-@@ -3503,6 +3668,15 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
+@@ -3838,6 +3922,13 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
          const char* hl = getenv("PS3RECOMP_METAL_HEADLESS");
          s_headless = (hl && *hl && *hl != '0');
  
@@ -361,14 +223,12 @@ index 3c534a0..c5f1a03 100644
 +            const long v = strtol(af, NULL, 10);
 +            s_aniso = v < 1 ? 1u : v > 16 ? 16u : (u32)v;
 +        }
-+        const char* fx = getenv("PS3RECOMP_METAL_FXAA");
-+        if (fx && *fx) s_fxaa = (*fx != '0');
-+        fprintf(stderr, "[RSX metal] anisotropy %ux, FXAA %s\n", s_aniso, s_fxaa ? "on" : "off");
++        fprintf(stderr, "[RSX metal] anisotropy %ux (live-draw path)\n", s_aniso);
 +
          s_dev = MTLCreateSystemDefaultDevice();
          if (!s_dev) {
              fprintf(stderr, "[RSX metal] no Metal device available\n");
-@@ -3647,8 +3821,21 @@ static int pump_messages_impl(void)
+@@ -3982,8 +4073,21 @@ static int pump_messages_impl(void)
                                                  inMode:NSDefaultRunLoopMode
                                                 dequeue:YES];
              if (!ev) break;

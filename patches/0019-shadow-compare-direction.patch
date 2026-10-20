@@ -1,8 +1,8 @@
 diff --git a/libs/video/rsx_fp_decompiler.c b/libs/video/rsx_fp_decompiler.c
-index 4e175d2..1ef278d 100644
+index d137820b..702344aa 100644
 --- a/libs/video/rsx_fp_decompiler.c
 +++ b/libs/video/rsx_fp_decompiler.c
-@@ -466,9 +466,11 @@ static void fp_shadow_helper(Out* p, u32 unit, u32 cube_mask,
+@@ -482,9 +482,11 @@ static void fp_shadow_helper(Out* p, u32 unit, u32 cube_mask,
  {
      char tex[32], text[4096];
      snprintf(tex, sizeof tex, cube_mask ? "rsx_tex%u" : "rsx_tex[%u]", unit);

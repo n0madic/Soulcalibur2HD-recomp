@@ -24,7 +24,7 @@ BUILD="$ROOT/build"
 TOOLKIT="$BUILD/ps3recomp"
 DEPS="$BUILD/deps"
 PREFIX="$DEPS/prefix"
-TOOLKIT_REV="0fe7dbf5db9a467aca268865fb26170ea113c541"   # v0.15.0
+TOOLKIT_REV="749182eebb936f086a007f63e1c7d853f3cf708a"   # v0.16.0
 
 # Pinned dependency sources (all permissive: zlib, BSD-3-Clause / Apache-2.0).
 SDL_TAG="release-2.32.10"
@@ -59,9 +59,12 @@ git -C "$TOOLKIT" config core.autocrlf false
 # The patches are applied to a clean checkout, once per change of the revision or of the patches: they overlap, so a
 # patch cannot be tested for "already applied" one by one. A stamp inside .git records what the tree was built from.
 PATCH_STAMP="$TOOLKIT/.git/sc2hd-patches"
-# patches/upstream/ holds open pull requests of the toolkit, imported as they are (each file names its PR and head
-# commit); they go on first and are dropped once the pinned revision contains them. patches/ is this port's own.
+# patches/ is this port's own changes to the toolkit. patches/upstream/ (if present) holds open pull requests of the
+# toolkit, imported as they are (each file names its PR and head commit); they go on first and are dropped once the
+# pinned revision contains them.
+shopt -s nullglob
 PATCHES=("$ROOT"/patches/upstream/*.patch "$ROOT"/patches/*.patch)
+shopt -u nullglob
 PATCH_ID="$TOOLKIT_REV $(cat "${PATCHES[@]}" | git hash-object --stdin)"
 if [[ "$(cat "$PATCH_STAMP" 2>/dev/null)" != "$PATCH_ID" ]]; then
   git -C "$TOOLKIT" checkout -q -f "$TOOLKIT_REV"

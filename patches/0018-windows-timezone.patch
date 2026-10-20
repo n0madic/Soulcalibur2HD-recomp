@@ -1,5 +1,5 @@
 diff --git a/runtime/syscalls/sys_timer.c b/runtime/syscalls/sys_timer.c
-index c99c270..8056a52 100644
+index c99c270a..8056a52e 100644
 --- a/runtime/syscalls/sys_timer.c
 +++ b/runtime/syscalls/sys_timer.c
 @@ -301,12 +301,15 @@ int64_t sys_time_get_timezone(ppu_context* ctx)

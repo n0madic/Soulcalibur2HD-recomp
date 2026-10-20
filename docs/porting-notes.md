@@ -1,6 +1,6 @@
 # Porting notes
 
-What had to be changed in the [ps3recomp](https://github.com/sp00nznet/ps3recomp) toolkit (pinned at `0fe7dbf5`, v0.15.0)
+What had to be changed in the [ps3recomp](https://github.com/sp00nznet/ps3recomp) toolkit (pinned at `749182ee`, v0.16.0)
 and added around it to make Soulcalibur II HD Online (PS3, version 01.00 or with update 01.01) run. The changes to the toolkit are `patches/`, applied
 in order to a fresh clone by `scripts/build_host.sh` (one patch per area, each with its own description; see "Patches" below); the port's own code is in `src/`. The toolkit's README lists macOS as
 "runs a recompiled game: no": its boot scaffold had never been booted on macOS before this port.
@@ -10,30 +10,18 @@ in order to a fresh clone by `scripts/build_host.sh` (one patch per area, each w
   Metal creates its window with `dispatch_sync(main queue)`; with the guest on the main thread that call never returned, the
   RSX FIFO was never drained and the game waited forever on its first fence label.
 - `main.cpp`: reads `PARAM.SFO` (`PS3_PARAM_SFO`) so `cellGame` knows title id and category.
-- `patches/0001`: `cellGameBootCheck` reports an HDD game for `CATEGORY=HG` (the game aborts unless the type is 2).
+- `cellGameBootCheck` reports an HDD game for `CATEGORY=HG` (the game aborts unless the type is 2); the toolkit does so since v0.16.0 (#359).
 - `sc2hd_hle.cpp`: the cellFiber scheduler API (`InitializeScheduler/CreateFiber/RunFibers/WaitSignal/SendSignal/JoinFiber/
   FinalizeScheduler`, on ucontext), `_sys_spu_printf_initialize`, `sceNpDrmIsAvailable`. The toolkit has none of these.
 - Game data: the runtime cannot decrypt licensed EDATs, so `sc2hd install` (`install.cpp`) decrypts them under their own names
   (`ROOT.EDAT`, `UPDATE.EDAT`) and `EBOOT.BIN` into `EBOOT.elf` when it unpacks the packages.
 
-## Open toolkit pull requests, imported as diffs
-`patches/upstream/` holds pull requests of the toolkit that are not merged yet, each file as the PR's own diff (header: PR number, author,
-head commit), applied before `patches/`. Where one of this port's patches overlapped a PR, the PR's code was kept and the patch reworked on
-top of it. When a PR is merged into the pinned revision its file is deleted.
-
-| File | PR | What it brings the port |
-|---|---|---|
-| `01-pr326` | #326 | guest spinlocks are 32-bit on LP64 hosts (arm64 alignment faults) |
-| `02-pr327` | #327 | bounded semaphore acquire, the stuck-get watchdog leaves FIFO waits alone |
-| `03-pr333` | #333 | `PS3_LANG` chooses the system language |
-| `04-pr334` | #334 | an unscaled NV3089 blit copies a row at a time |
-| `05-pr338` | #338 | `PS3_GAMEDATA_ROOT` (the launcher sets it; saves stay under `PS3_HDD0_ROOT`, `patches/0001`) |
-| `06-pr340` | #340 | a task's `signalled` bit is updated atomically against SPU commits |
-| `07-pr343` | #343 | a queued flip waits for its label and completes when the RSX reaches it |
-| `08-pr347` | #347 | `get` follows the walker across a JUMP |
-| `09-pr348` | #348 | the engine converts a transfer's rows a pixel at a time |
-| `10-pr349` | #349 | `CELL_FS_O_*` values, so `O_CREAT` creates |
-| `11-pr358` | #358 | the NV3089 source origin (12.4) counts as `origin << 16` in the copy loops and the engine write-back |
+## Open toolkit pull requests
+A toolkit pull request this port needs before it is merged is imported as the PR's own diff into `patches/upstream/` (header: PR number, author,
+head commit), applied before `patches/`, and its file is deleted when the pinned revision contains it. There are none at the moment: v0.16.0 merged
+every one this port had imported (#326, #327, #333, #334, #338, #340, #343, #347, #348, #349) and the ones it had sent (#358 the NV3089 source origin,
+#359 cellGame type, #360 MsgDialog buttons, #361 D3D12 vertex program cache, #362 SPU thread image, #363 SPU user-event port). Where one of this
+port's patches overlapped something upstream, upstream's code was kept and the patch reworked on top of it.
 
 ## Patches
 | Patch | Area |
@@ -42,10 +30,10 @@ top of it. When a PR is merged into the pinned revision its file is deleted.
 | `0002-spurs-and-spu-runtime` | SPURS workloads, SPU wake-ups, thread images, LS hooks, saturating log counters |
 | `0003-audio` | `AUDIO_PEAK` / `AUDIO_WAV`, the Windows mix paced on the block clock |
 | `0004-input` | cellPad keyboard fallbacks (macOS, SDL) and the SDL gamepad thread |
-| `0005-gcm-draw-engine` | display lists, supersampled resolve on the GPU, snapshots, NV3089 row copy, vertex program memo |
+| `0005-gcm-draw-engine` | display lists, supersampled resolve on the GPU, snapshots, vertex program memo |
 | `0006-vulkan-backend` | Vulkan backend on Windows, batched submission, one wait per present |
-| `0007-metal-backend` | Cmd+Q menu, key events, FXAA / anisotropic filtering, resizable window |
-| `0008-d3d12-backend` | vertex program cache keyed by program |
+| `0007-metal-backend` | Cmd+Q menu, key events, anisotropic filtering of the old path, resizable window with letterbox |
+| `0008-d3d12-backend` | saturating log counters (the program-keyed vertex program cache is in the toolkit since v0.16.0, #361) |
 | `0009-window-icon` | window icon hook |
 | `0010-portability` | module accessors, optional LGPL ATRAC, MinGW GCC (loader, `__thread`) |
 | `0011-loading-overlay` | "Loading..." over the black window while the game boots |
@@ -99,8 +87,7 @@ What was needed to get here (beyond the SPURS work above):
   six 2:1 resolve tiles went through the generic NV3089 copy, which read the whole surface back every frame (fights at 43 frames a
   second on Metal). The copy loops counted the 12.4 source origin as `origin << 8` instead of `<< 16` (the steps have 20 fractional bits), so the
   tiles' 1-pixel source offset (`uv=0x00100010`) started at column 0 while the engine write-back started at 1: the first row and
-  column of every tile stayed black, a grid over the picture. Everything now uses `origin << 16` (`11-pr358`, with the matching
-  edits in `0005` and in the row copy of #334). `0017` adds an optional backend call, `color_target_resolve`, a 1/k downscale on the GPU
+  column of every tile stayed black, a grid over the picture; fixed in the toolkit since v0.16.0 (#358). `0017` adds an optional backend call, `color_target_resolve`, a 1/k downscale on the GPU
   (Metal: one pass with a linear sampler; Vulkan: linear blits), which the engine uses for the tiles when the blit is
   INTERPOLATOR_FOH from a corner origin, as this game's is: fights at 56-60 frames a second. The tile's source starts at the
   guest position, i.e. one texel in (RPCS3 does the same for a corner origin), which puts the picture about 0.75 pixel up and left
@@ -130,11 +117,11 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
 - `patches/0007`: Metal backend gets a main menu with Cmd+Q ("Quit <title>"); closing the window or Cmd+Q ends the process (`main.cpp` calls `_exit(0)` when `rsx_backend_pump()` reports the close).
 - `patches/0002`: `spu_register_ls_hook`, `SPU_GETLOG=<lo>,<hi>` (log MFC transfers touching an LS range), lr in the "synthesised stop" message. `patches/0001`: see below.
 - `patches/0007`: the Metal window drops key down/up events (the pad polls the keyboard itself), so a keypress no longer plays the system alert sound; Cmd shortcuts still reach the menu.
-- `patches/0007`: image quality on the Metal path. The game renders 1280x720 with no anti-aliasing of its own. FXAA 3.11 (quality
-  variant) runs in the display pass that puts the finished frame on the window (`PS3RECOMP_METAL_FXAA=0|1`, default 1), and linearly
-  filtered game textures get anisotropic filtering (`PS3RECOMP_METAL_AF=1..16`, default 16). the launcher maps `--fxaa`, `--no-fxaa`,
-  `--af N` to those. FXAA also softens the HUD a little, it filters the whole frame. The old non-engine (vtable) path only gets AF.
-  `PS3RECOMP_METAL_HEADLESS=1 PS3RECOMP_METAL_PRESENT_DUMP=<dir>` writes every 120th presented frame (and the unfiltered one as `_raw`).
+- Image quality on the Metal path. The game renders 1280x720 with no anti-aliasing of its own. Since v0.16.0 the toolkit has FXAA 3.11 and
+  contrast-adaptive sharpening in the present (`PS3_AA=fxaa`, `PS3_SHARPEN=0..1`) and anisotropic filtering of mipmapped samplers
+  (`PS3_ANISO=2..16`), all off unless set; the launcher sets FXAA and 16x by default (`--no-fxaa`, `--af N`). FXAA also softens the
+  HUD a little, it filters the whole frame. `patches/0007` keeps the old non-engine (vtable) path's anisotropy (`PS3RECOMP_METAL_AF`,
+  default 16). `PS3RECOMP_METAL_HEADLESS=1 PS3RECOMP_METAL_PRESENT_DUMP=<dir>` writes every 120th presented frame (and the unfiltered one as `_raw`).
 - `patches/0007`: the window is resizable without stretching. The drawable follows the window's size in device pixels (a Retina window
   is now presented 1:1 instead of being upscaled by the compositor), and the display pass fits the 16:9 picture into it and centres
   it, black elsewhere. Rendering itself stays 1280x720: the game's projection and UI are 16:9, so a different aspect would only

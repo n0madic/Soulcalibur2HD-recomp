@@ -8,7 +8,7 @@ Metal fullscreen: start in fullscreen on request, Ctrl+Cmd+F toggles it.
 ---
 
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index c535bf3..dec1669 100644
+index 392bea16..3718fb50 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
 @@ -615,6 +615,11 @@ static int create_window_impl(const char* title)

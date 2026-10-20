@@ -14,7 +14,7 @@ Module access and portability: separate game module, optional LGPL decoder, MinG
 ---
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index a38bcea..795230f 100644
+index 4e8f8985..15ed7844 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -76,9 +76,16 @@ endif()
@@ -38,10 +38,10 @@ index a38bcea..795230f 100644
  # Runtime core (syscalls, PPU, SPU, memory)
  file(GLOB_RECURSE RUNTIME_SOURCES
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index 0e76eaa..bdeaf6f 100644
+index 972999ce..53d2e8b5 100644
 --- a/runtime/ppu/ppu_loader.cpp
 +++ b/runtime/ppu/ppu_loader.cpp
-@@ -626,7 +626,12 @@ static uint32_t samp_stack_guest(HANDLE h, const CONTEXT* c)
+@@ -627,7 +627,12 @@ static uint32_t samp_stack_guest(HANDLE h, const CONTEXT* c)
      const uintptr_t* sp = (const uintptr_t*)c->Rsp;
      for (int i = 0; i < 512; i++) {          /* 4 KB of stack */
          uintptr_t v;
@@ -54,7 +54,7 @@ index 0e76eaa..bdeaf6f 100644
          uint32_t g = samp_lookup(v);
          if (g) return g;
      }
-@@ -700,7 +705,7 @@ static DWORD WINAPI samp_thread(LPVOID p)
+@@ -701,7 +706,7 @@ static DWORD WINAPI samp_thread(LPVOID p)
   * Writing the word leaves memory self-consistent: lwarx, the CAS and the
   * polling reader all see the same thing, so the guest behaves as it would if
   * whatever should have cleared the counter had done so. */
@@ -63,7 +63,7 @@ index 0e76eaa..bdeaf6f 100644
  static DWORD WINAPI poke_thread(LPVOID p)
  {
      const uint32_t ea  = (uint32_t)(uintptr_t)p;
-@@ -1966,6 +1971,9 @@ void flow_lookup_alloc(unsigned int p) {
+@@ -1967,6 +1972,9 @@ void flow_lookup_alloc(unsigned int p) {
  
  /* Cross-fragment trampoline pointer (matches the lifted header's TLS decl). */
  extern "C" PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*) = nullptr;
@@ -74,7 +74,7 @@ index 0e76eaa..bdeaf6f 100644
  /* Per-thread active guest context, for the crash handler to report the guest PC
   * (ctx->pc, updated by lifted code at block boundaries) of a host AV. */
 diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
-index 50036e3..2363008 100644
+index 50036e35..2363008d 100644
 --- a/runtime/spu/spu_context.h
 +++ b/runtime/spu/spu_context.h
 @@ -775,6 +775,17 @@ static inline int spu_channel_has_data(const spu_channel* ch)
@@ -104,7 +104,7 @@ index 50036e3..2363008 100644
  /* Central per-transfer hooks (stubbed in spu_drain.c until their milestones). */
  void yz_lockstep_tick(spu_context* ctx);             /* round-robin token gate */
 diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
-index 62ec5cd..593c2ed 100644
+index 62ec5cd5..593c2ed3 100644
 --- a/runtime/spu/spu_drain.c
 +++ b/runtime/spu/spu_drain.c
 @@ -22,6 +22,11 @@ SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*) = 0;
@@ -120,7 +120,7 @@ index 62ec5cd..593c2ed 100644
  
  /* SPURS task-launch interception at a trampoline hop (milestone: SPURS kernel).
 diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
-index 6b2928f..ec6f443 100644
+index 0f470154..81c3bb37 100644
 --- a/runtime/spu/spurs_job.c
 +++ b/runtime/spu/spurs_job.c
 @@ -146,8 +146,8 @@ const uint8_t* spurs_job_ls_for_handle(uint32_t handle)
@@ -135,7 +135,7 @@ index 6b2928f..ec6f443 100644
  int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
                        uint32_t job_ea, uint32_t job_desc_size)
 diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
-index e06fa6e..ca2789c 100644
+index 67145321..bdfc91a5 100644
 --- a/runtime/syscalls/sys_ppu_thread.c
 +++ b/runtime/syscalls/sys_ppu_thread.c
 @@ -4,6 +4,7 @@
@@ -148,7 +148,7 @@ index e06fa6e..ca2789c 100644
   * guest lets it run on past the call: Twisted Metal has a thread that exits
 diff --git a/third_party/at3_stub/at3_stub.c b/third_party/at3_stub/at3_stub.c
 new file mode 100644
-index 0000000..9de4e96
+index 00000000..9de4e969
 --- /dev/null
 +++ b/third_party/at3_stub/at3_stub.c
 @@ -0,0 +1,14 @@
@@ -167,7 +167,7 @@ index 0000000..9de4e96
 +    return -1;
 +}
 diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
-index 6e28f3b..f23355b 100644
+index 6e28f3b7..f23355bb 100644
 --- a/tools/ppu_lifter.py
 +++ b/tools/ppu_lifter.py
 @@ -474,8 +474,16 @@ extern "C" void ps3_indirect_call_to(ppu_context* ctx, uint32_t target);

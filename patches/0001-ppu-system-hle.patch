@@ -19,7 +19,7 @@ PPU runtime and system-library HLE fixes Soulcalibur II HD needs.
 
 diff --git a/include/ps3emu/log_first.h b/include/ps3emu/log_first.h
 new file mode 100644
-index 0000000..73cba23
+index 00000000..73cba23e
 --- /dev/null
 +++ b/include/ps3emu/log_first.h
 @@ -0,0 +1,13 @@
@@ -37,7 +37,7 @@ index 0000000..73cba23
 +
 +#endif /* PS3RECOMP_LOG_FIRST_H */
 diff --git a/libs/filesystem/cellFs.c b/libs/filesystem/cellFs.c
-index 942ea51..9cbf223 100644
+index 942ea515..9cbf2237 100644
 --- a/libs/filesystem/cellFs.c
 +++ b/libs/filesystem/cellFs.c
 @@ -6,6 +6,7 @@
@@ -58,7 +58,7 @@ index 942ea51..9cbf223 100644
                     (uint32_t)(uintptr_t)buf,
                     (unsigned long long)nbytes, (unsigned long long)bytes_read);
 diff --git a/libs/network/cellNetCtl.c b/libs/network/cellNetCtl.c
-index c7926c0..dd1a104 100644
+index c7926c0c..dd1a104a 100644
 --- a/libs/network/cellNetCtl.c
 +++ b/libs/network/cellNetCtl.c
 @@ -334,6 +334,13 @@ s32 cellNetCtlDelHandler(s32 hid)
@@ -99,42 +99,8 @@ index c7926c0..dd1a104 100644
      netstart_broadcast(CELL_SYSUTIL_NET_CTL_NETSTART_UNLOADED);
      return CELL_OK;
  }
-diff --git a/libs/system/cellGame.c b/libs/system/cellGame.c
-index 071b9ec..48b09db 100644
---- a/libs/system/cellGame.c
-+++ b/libs/system/cellGame.c
-@@ -295,6 +295,14 @@ void cellGame_init_from_paramsfo(const char* sfo_path)
-         printf("[cellGame] PARAM.SFO not read ('%s'); keeping title id '%s'\n",
-                sfo_path, s_title_id);
-     }
-+    /* CATEGORY decides what cellGameBootCheck reports: "HG" is an HDD game (a PSN
-+     * download, booted from /dev_hdd0/game/<id>), "DG" a disc game. Titles check
-+     * the type -- Soulcalibur II HD aborts its boot unless it is HDD. */
-+    if (sfo_read_string(sfo_path, "CATEGORY", tmp, sizeof(tmp)) == 0 && tmp[0]) {
-+        if (strcmp(tmp, "HG") == 0)      s_game_type = CELL_GAME_GAMETYPE_HDD;
-+        else if (strcmp(tmp, "DG") == 0) s_game_type = CELL_GAME_GAMETYPE_DISC;
-+        printf("[cellGame] CATEGORY '%s' -> game type %u\n", tmp, s_game_type);
-+    }
-     if (sfo_read_string(sfo_path, "TITLE", tmp, sizeof(tmp)) == 0 && tmp[0]) {
-         strncpy(s_title, tmp, sizeof(s_title) - 1); s_title[sizeof(s_title) - 1] = '\0';
-     }
-diff --git a/libs/system/cellMsgDialog.h b/libs/system/cellMsgDialog.h
-index 632e646..63d3be5 100644
---- a/libs/system/cellMsgDialog.h
-+++ b/libs/system/cellMsgDialog.h
-@@ -36,8 +36,8 @@ extern "C" {
- #define CELL_MSGDIALOG_TYPE_PROGRESSBAR_DOUBLE     0x00002000
- 
- /* Button results */
--#define CELL_MSGDIALOG_BUTTON_NONE     0
--#define CELL_MSGDIALOG_BUTTON_INVALID  (-1)
-+#define CELL_MSGDIALOG_BUTTON_NONE     (-1)   /* closed by the title (Close); RPCS3: NONE = -1, INVALID = 0 */
-+#define CELL_MSGDIALOG_BUTTON_INVALID  0
- #define CELL_MSGDIALOG_BUTTON_OK       1
- #define CELL_MSGDIALOG_BUTTON_YES      1
- #define CELL_MSGDIALOG_BUTTON_NO       2
 diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
-index 286bf47..bb6b18e 100644
+index 286bf478..bb6b18ea 100644
 --- a/libs/system/cellSaveData.c
 +++ b/libs/system/cellSaveData.c
 @@ -64,6 +64,18 @@ static void adopt_gamedata_root(void)
@@ -356,10 +322,10 @@ index 286bf47..bb6b18e 100644
  
  s32 cellSaveDataDelete(u32 version, const char* dirName,
 diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
-index 9b7f790..3952f98 100644
+index 44cd4ee8..824d17c7 100644
 --- a/runtime/ppu/ppu_fs.cpp
 +++ b/runtime/ppu/ppu_fs.cpp
-@@ -123,6 +123,7 @@ static void guest_strcpy(char* dst, uint32_t gaddr, size_t cap)
+@@ -124,6 +124,7 @@ static void guest_strcpy(char* dst, uint32_t gaddr, size_t cap)
  /* Defined in runtime/syscalls/sys_fs.c -- shared by all three path
   * translators. (extern "C" is ill-formed at block scope.) */
  extern "C" void ps3_vfs_ps3game_fallback(char* path, size_t cap);
@@ -367,7 +333,7 @@ index 9b7f790..3952f98 100644
  
  /* Translate a guest path to a host path under ppu_vfs_root. Known PS3 mount
   * prefixes are stripped; the rest is appended to the root. */
-@@ -150,7 +151,7 @@ static void host_path(char* out, size_t cap, const char* guest)
+@@ -165,7 +166,7 @@ static void host_path(char* out, size_t cap, const char* guest)
      if (strncmp(guest, "/dev_flash/", 11) == 0) {
          const char* fw = getenv("PS3_DEV_FLASH");
          if (!fw || !*fw) fw = "D:/recomp/tools/rpcs3/dev_flash";
@@ -377,7 +343,7 @@ index 9b7f790..3952f98 100644
          return;
      }
 diff --git a/runtime/ppu/ppu_hle.cpp b/runtime/ppu/ppu_hle.cpp
-index d9ce0c3..309299f 100644
+index d9ce0c36..309299f3 100644
 --- a/runtime/ppu/ppu_hle.cpp
 +++ b/runtime/ppu/ppu_hle.cpp
 @@ -18,6 +18,7 @@
@@ -407,7 +373,7 @@ index d9ce0c3..309299f 100644
                          opd = 0;   /* fall through to the HLE handler below */
                          break;
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index 1baea72..99fba64 100644
+index 148be1ff..d8438f89 100644
 --- a/runtime/ppu/ppu_loader.cpp
 +++ b/runtime/ppu/ppu_loader.cpp
 @@ -21,6 +21,7 @@
@@ -418,7 +384,7 @@ index 1baea72..99fba64 100644
  #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
-@@ -1799,7 +1800,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
+@@ -1800,7 +1801,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
        if (s_wv && v == s_wv && a >= s_wvlo && a < s_wvhi &&
            (!s_wvg || GetFileAttributesA(s_wvg) != INVALID_FILE_ATTRIBUTES)) {
            static int _n = 0;
@@ -427,7 +393,7 @@ index 1baea72..99fba64 100644
                fprintf(stderr, "[wv] 0x%08X <- 0x%X (w%d) guest-fn=0x%08X\n",
                        a, v, width, ppu_prof_resolve_host(ra));
                extern PPU_THREAD_LOCAL ppu_context* g_active_ctx;
-@@ -1886,7 +1887,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
+@@ -1887,7 +1888,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
      if (!b) return;
      if (a >= b + 0x40 && a < b + 0xC0) {
          static int _n = 0;
@@ -436,7 +402,7 @@ index 1baea72..99fba64 100644
              fprintf(stderr, "[sync-write] +0x%02X <- 0x%X (w%d) guest-fn=0x%08X\n",
                      a - b, v, width, ppu_prof_resolve_host(ra));
      }
-@@ -2712,7 +2713,7 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
+@@ -2713,7 +2714,7 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
          ppu_fn fn2 = ppu_lookup(toc_reg);
          if (fn2) {
              static int _n = 0;
@@ -446,7 +412,7 @@ index 1baea72..99fba64 100644
              addr = toc_reg; ctx->ctr = toc_reg;
              fn = fn2;
 diff --git a/runtime/syscalls/sys_fs.c b/runtime/syscalls/sys_fs.c
-index 489f8a5..9fcd29a 100644
+index f076ef89..acf3661a 100644
 --- a/runtime/syscalls/sys_fs.c
 +++ b/runtime/syscalls/sys_fs.c
 @@ -76,6 +76,29 @@ static void fs_normalize_sep(char* p) {
@@ -479,7 +445,7 @@ index 489f8a5..9fcd29a 100644
  /* Extracted game trees come in two shapes: the disc layout (<root>/PS3_GAME/
   * USRDIR/...) and a flattened one (<root>/USRDIR/...). cellGame hands the title
   * disc-style paths either way -- cellGameContentPermit reports
-@@ -153,7 +176,7 @@ void sys_fs_translate_path(const char* ps3_path, char* host_path, int host_path_
+@@ -193,7 +216,7 @@ void sys_fs_translate_path(const char* ps3_path, char* host_path, int host_path_
          static const char* fw = NULL; static int fw_init = 0;
          if (!fw_init) { fw = getenv("PS3_DEV_FLASH"); fw_init = 1; }
          if (fw && *fw && strncmp(ps3_path, "/dev_flash/", 11) == 0) {

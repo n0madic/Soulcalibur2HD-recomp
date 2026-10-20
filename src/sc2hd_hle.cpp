@@ -1,7 +1,7 @@
 /*
  * Soulcalibur II HD Online (NPUB31366, versions 01.00 and 01.01) -- title-specific HLE.
  *
- * Firmware imports the game uses that ps3recomp v0.15.0 does not implement:
+ * Firmware imports the game uses that ps3recomp v0.16.0 does not implement:
  *   - the cellFiber scheduler API (cellFiberPpuInitializeScheduler, CreateFiber,
  *     RunFibers, WaitSignal, SendSignal, JoinFiber, FinalizeScheduler); the
  *     toolkit only has the older scheduler-less cellFiberPpuCreateFiber(fiber, ...)

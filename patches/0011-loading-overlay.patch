@@ -7,10 +7,10 @@ Boot "Loading..." overlay: the window is black for the first seconds of a title.
 - The D3D12 backend does not run the draw engine and has no overlay.
 
 diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
-index 3aa7a41..37e56c3 100644
+index 47be6845..f3619a84 100644
 --- a/libs/video/rsx_draw_engine.c
 +++ b/libs/video/rsx_draw_engine.c
-@@ -176,6 +176,7 @@ static struct {
+@@ -180,6 +180,7 @@ static struct {
      u64 texture_use_serial;
      u32 guest_draws;
      u32 last_guest_draws;
@@ -18,7 +18,7 @@ index 3aa7a41..37e56c3 100644
      u32 last_present_surface;
      u32 last_flip_buffer;
      u64 write_serial;       /* orders colour and depth writes to one address */
-@@ -2865,11 +2866,44 @@ static u32 eng_present_surface(u32 buffer_id)
+@@ -3158,11 +3159,44 @@ static u32 eng_present_surface(u32 buffer_id)
      return eng_current_surface();
  }
  
@@ -63,7 +63,7 @@ index 3aa7a41..37e56c3 100644
      if (getenv("PS3RECOMP_METAL_FRAME_DUMP") && g.frames % 120 == 0) {
          u32 current = eng_current_surface();
          fprintf(stderr, "[rsx capture] frame=%u buffer=%u selected=%u current=%u draws=%u surfaces=%u\n",
-@@ -2948,6 +2982,10 @@ int rsx_draw_engine_init(u32 width, u32 height)
+@@ -3243,6 +3277,10 @@ int rsx_draw_engine_init(u32 width, u32 height)
      sink.flip             = sink_flip;
      rsx_dispatch_init(&g.rsx, &sink);
      g.ready = 1;
@@ -75,10 +75,10 @@ index 3aa7a41..37e56c3 100644
      cellGcm_replay_display_buffers_to_engine();
      fprintf(stderr, "[rsx engine] register-file draw engine up (%ux%u)\n",
 diff --git a/libs/video/rsx_draw_engine.h b/libs/video/rsx_draw_engine.h
-index e8cdbf9..ce76a6b 100644
+index 156ca1bb..77b71a9c 100644
 --- a/libs/video/rsx_draw_engine.h
 +++ b/libs/video/rsx_draw_engine.h
-@@ -310,6 +310,10 @@ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32
+@@ -323,6 +323,10 @@ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32
   * memory first, so the transfer sees (or overwrites) the resolved pixels. */
  void rsx_draw_engine_guest_access(u32 location, u32 offset, u32 bytes);
  
@@ -91,7 +91,7 @@ index e8cdbf9..ce76a6b 100644
  /* Draws that ran the guest's OWN programs in the last presented frame. A draw
 diff --git a/libs/video/rsx_loading_overlay.h b/libs/video/rsx_loading_overlay.h
 new file mode 100644
-index 0000000..40e8d6c
+index 00000000..40e8d6c7
 --- /dev/null
 +++ b/libs/video/rsx_loading_overlay.h
 @@ -0,0 +1,73 @@
@@ -169,7 +169,7 @@ index 0000000..40e8d6c
 +
 +#endif
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index fba6909..c535bf3 100644
+index 2cafe247..392bea16 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
 @@ -2237,6 +2237,7 @@ static void release_surfaces(void)
@@ -180,27 +180,27 @@ index fba6909..c535bf3 100644
  
  #define ENG_MAX_OBJECTS  4096
  #define ENG_MAX_PIPES    4096
-@@ -2335,6 +2336,8 @@ static void release_surfaces(void)
- static id<MTLRenderPipelineState> s_eng_depth_pso;
- static id<MTLSamplerState>        s_eng_point_sampler;
+@@ -2346,6 +2347,8 @@ static void release_surfaces(void)
+ static int   s_eng_fxaa = -1;
+ static float s_eng_sharpen = -1.0f;
  static id<MTLRenderPipelineState> s_eng_fxaa_pso;
 +static id<MTLTexture>             s_loading_tex;      /* the boot "Loading..." text */
 +static unsigned                   s_loading_scale;
  static MTLPixelFormat             s_eng_fxaa_pso_fmt;
+ static id<MTLTexture>             s_eng_fxaa_tex;
  
- static NSString* const kEngHelperMSL = @
-@@ -2572,6 +2575,7 @@ static void eng_shutdown(void* user)
-     s_eng_depth_pso = nil;
-     s_eng_point_sampler = nil;
+@@ -2664,6 +2667,7 @@ static void eng_shutdown(void* user)
+     s_eng_linear_sampler = nil;
      s_eng_fxaa_pso = nil;
+     s_eng_fxaa_tex = nil;
 +    s_loading_tex = nil;
      s_eng_active = 0;
      s_eng_encoding_failed = 0;
      s_eng_checked_completed = 0;
-@@ -3378,6 +3382,35 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
-     return *pso;
- }
- 
+@@ -3590,6 +3594,36 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+  * PS3_SHARPEN this pass sharpens it as it samples. Either one that is off or
+  * fails is skipped. The picture keeps its aspect ratio: it is fitted into the drawable and
+  * centred, and the rest is black (letterbox). */
 +/* The boot "Loading..." text (rsx_loading_overlay.h), drawn over the bottom right corner of the display pass with
 + * the same full-screen blit, its viewport shrunk to the text. */
 +static void eng_draw_loading(id<MTLRenderCommandEncoder> e, id<MTLTexture> dst)
@@ -219,30 +219,31 @@ index fba6909..c535bf3 100644
 +        s_loading_scale = scale;
 +        free(rgba);
 +    }
-+    id<MTLRenderPipelineState> pso = eng_display_pso([dst pixelFormat], 0);
-+    if (!s_loading_tex || !pso) return;
++    if (!s_loading_tex || !s_eng_blit_pso) return;   /* the present pipeline eng_blit_to_display has set up */
 +    unsigned x, y;
 +    rsx_loading_overlay_place(dw, dh, scale, &x, &y);
 +    [e setViewport:(MTLViewport){(double)x, (double)y, (double)w, (double)h, 0.0, 1.0}];
-+    [e setRenderPipelineState:pso];
++    [e setRenderPipelineState:s_eng_blit_pso];
 +    [e setFragmentTexture:s_loading_tex atIndex:0];
 +    [e setFragmentSamplerState:s_eng_point_sampler atIndex:0];
++    { const struct { float gamma, sharp, px[2]; } plain = { 1.0f, 0.0f, { 0.0f, 0.0f } };   /* no gamma, no sharpening */
++      [e setFragmentBytes:&plain length:sizeof plain atIndex:0]; }
 +    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 +}
 +
  static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
                                  id<MTLTexture> dst)
  {
-@@ -3401,6 +3434,7 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
-     const int scaled = (vw != sw || vh != sh);
-     [e setFragmentSamplerState:((s_fxaa || scaled) ? s_default_sampler : s_eng_point_sampler) atIndex:0];
+@@ -3635,6 +3669,7 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+           { 1.0f / (float)[src width], 1.0f / (float)[src height] } };
+       [e setFragmentBytes:&p length:sizeof p atIndex:0]; }
      [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 +    if (rsx_draw_engine_loading_overlay()) eng_draw_loading(e, dst);
      [e endEncoding];
  }
  
 diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
-index 507d8ac..48badf2 100644
+index 67fee3f5..d029310e 100644
 --- a/libs/video/rsx_vulkan_backend.c
 +++ b/libs/video/rsx_vulkan_backend.c
 @@ -52,6 +52,7 @@
@@ -253,7 +254,7 @@ index 507d8ac..48badf2 100644
  #include "vulkan/rsx_vk_fallback_vert.spv.h"
  #include "vulkan/rsx_vk_fallback_frag.spv.h"
  
-@@ -1879,6 +1880,40 @@ static int vk_window_acquire(u32* idx)
+@@ -1945,6 +1946,40 @@ static int vk_window_acquire(u32* idx)
      return 0;
  }
  
@@ -292,22 +293,22 @@ index 507d8ac..48badf2 100644
 +}
 +
  /* Records the blit of the offscreen target into swapchain image `idx`, ending with the image ready to present. */
- static void vk_window_blit(VkCommandBuffer cmd, u32 idx)
+ static void vk_window_blit(VkCommandBuffer cb, u32 idx)
  {
-@@ -1902,6 +1937,7 @@ static void vk_window_blit(VkCommandBuffer cmd, u32 idx)
-     pvkCmdBlitImage(cmd, s_vk.color.img, VK_IMAGE_LAYOUT_GENERAL,
+@@ -1968,6 +2003,7 @@ static void vk_window_blit(VkCommandBuffer cb, u32 idx)
+     pvkCmdBlitImage(cb, s_vk.color.img, VK_IMAGE_LAYOUT_GENERAL,
                      s_vk.sc_images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      1, &blit, VK_FILTER_LINEAR);
 +    if (rsx_draw_engine_loading_overlay()) vk_window_loading(cmd, idx);
      b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
      b.dstAccessMask = 0;
      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-@@ -3704,6 +3740,8 @@ void rsx_vulkan_backend_shutdown(void)
+@@ -3897,6 +3933,8 @@ void rsx_vulkan_backend_shutdown(void)
          vk_destroy_image(&s_vk.color);
          vk_destroy_buffer(&s_vk.vertices);
          vk_destroy_buffer(&s_vk.readback);
 +        vk_destroy_buffer(&s_loading_buf);
 +        s_loading_scale = 0;
          if (s_vk.fence) pvkDestroyFence(s_vk.device, s_vk.fence, NULL);
-         if (s_vk.pool)  pvkDestroyCommandPool(s_vk.device, s_vk.pool, NULL);   /* frees the pool's command buffers */
-         s_cmd_win = VK_NULL_HANDLE;      /* the window present's command buffer went with the pool: a re-init allocates anew */
+         if (s_vk.pool)  pvkDestroyCommandPool(s_vk.device, s_vk.pool, NULL);
+         if (s_vk.present_fence) pvkDestroyFence(s_vk.device, s_vk.present_fence, NULL);

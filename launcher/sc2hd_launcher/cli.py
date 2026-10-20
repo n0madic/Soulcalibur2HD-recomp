@@ -177,8 +177,9 @@ def main(argv: list[str] | None = None) -> int:
     env: dict[str, str] = {}
     if args.unlock:
         env.update(unlock_env())
-    if args.fxaa is not None:
-        env["PS3RECOMP_METAL_FXAA"] = "1" if args.fxaa else "0"
+    # The toolkit's own present options (PS3_AA, PS3_ANISO) are off unless set; the launcher turns them on by default
+    env["PS3_AA"] = "off" if args.fxaa is False else "fxaa"
+    env["PS3_ANISO"] = str(args.af if args.af is not None else 16)
     if args.af is not None:
         env["PS3RECOMP_METAL_AF"] = str(args.af)
     if args.window:

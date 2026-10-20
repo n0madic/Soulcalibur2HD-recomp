@@ -10,7 +10,7 @@ Also: saturating log counters in rsx_d3d12_backend.c.
 ---
 
 diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
-index d629f72..294a3aa 100644
+index 966572b1..a9f9489d 100644
 --- a/libs/video/rsx_d3d12_backend.c
 +++ b/libs/video/rsx_d3d12_backend.c
 @@ -17,6 +17,7 @@
@@ -21,22 +21,7 @@ index d629f72..294a3aa 100644
  #include "rsx_d3d12_backend.h"
  #include "rsx_primitives.h"
  #include "rsx_vertex_fetch.h"
-@@ -184,11 +185,12 @@ typedef struct {
-     ID3DBlob* vs;
-     int uses_c03;
- } VPVSEntry;
--#define VP_VS_CACHE 16  /* wave uses 5+ distinct VPs; at 4 the cache
-+#define VP_VS_CACHE 128 /* wave uses 5+ distinct VPs; at 4 the cache
-                          * thrashed every frame and eviction shifted slots
-                          * under recorded vs_idx values -- the display mesh
-                          * drew with the WRONG vertex program (sub-rect +
--                         * edge slivers instead of fullscreen) */
-+                         * edge slivers instead of fullscreen). Soulcalibur II
-+                         * HD draws a fight with more than 16. */
- 
- /* Compiled guest-FP pipeline cache: decompiled VS (by cache slot) + decompiled
-  * PS (fragment ucode at fp_addr). */
-@@ -445,7 +447,7 @@ static void subvp_capture(u32 fi)
+@@ -446,7 +447,7 @@ static void subvp_capture(u32 fi)
          bb[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
          bb[1].Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
          s_d3d.cmd_list->lpVtbl->ResourceBarrier(s_d3d.cmd_list, 2, bb);
@@ -45,22 +30,7 @@ index d629f72..294a3aa 100644
              fprintf(stderr, "[SUBVP] captured %ux%u from (%u,%u)%c",
                      s_subvp[i].w, s_subvp[i].h, s_subvp[i].x, s_subvp[i].y, 10); }
      }
-@@ -1743,6 +1745,14 @@ static int vp_get_vs(const rsx_state* st)
-     if (vstart >= st->vp_ucode_bytes) vstart = 0;
-     const u8* vuc = st->vp_ucode + vstart;
-     u32 vlen = st->vp_ucode_bytes - vstart;
-+    /* Hash the program's own bytes, to its end bit, not everything after it
-+     * in the store (as the Metal backend does): a title that keeps several
-+     * programs resident and uploads others behind the one it draws with
-+     * changed the hash on every upload, so nearly every draw missed and ran
-+     * D3DCompile on the FIFO thread -- about one frame a second. */
-+    { extern u32 rsx_vp_program_size_instrs(const u8*, u32);
-+      const u32 instrs = rsx_vp_program_size_instrs(vuc, vlen);
-+      if (instrs) vlen = instrs * 16u; }
-     u32 hash = vp_hash_ucode(vuc, vlen);
-     for (int i = 0; i < s_d3d.vp_vs_n; i++)
-         if (s_d3d.vp_vs[i].hash == hash) return i;
-@@ -2180,7 +2190,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+@@ -2187,7 +2188,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
              snprintf(r2, sizeof r2, ".xyz");
              hlsl_replace_all(hlsl, sizeof hlsl, f2, r2);
          }
@@ -69,7 +39,7 @@ index d629f72..294a3aa 100644
              fprintf(stderr, "[CUBE] fp=0x%X compiled with cube units mask 0x%X%c",
                      fp_addr, cube_mask, 10); }
      }
-@@ -2561,7 +2571,7 @@ static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, int cube, u32 mips
+@@ -2568,7 +2569,7 @@ static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, int cube, u32 mips
              u32 alt = rsx_find_vram_upload(sz);
              if (alt) {
                  static int _n = 0;
@@ -78,7 +48,7 @@ index d629f72..294a3aa 100644
                                        off, w, h, sz, alt, 10);
                  off = alt;
              }
-@@ -2939,7 +2949,7 @@ static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, int cube, u32 mips
+@@ -2946,7 +2947,7 @@ static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, int cube, u32 mips
                          drow[x*4+2] = 0x00; drow[x*4+3] = 0xFF;
                      }
                  }
@@ -87,7 +57,7 @@ index d629f72..294a3aa 100644
                      fprintf(stderr, "[TEXHILITE] duck texture off=0x%08X avg=(%u,%u,%u) -> red%c",
                              off, ar, ag, ab, 10); }
              }
-@@ -2964,7 +2974,7 @@ static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, int cube, u32 mips
+@@ -2971,7 +2972,7 @@ static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, int cube, u32 mips
                      drow[x*4+2] = 0x00; drow[x*4+3] = 0xFF;
                  }
              }
@@ -96,7 +66,7 @@ index d629f72..294a3aa 100644
                  fprintf(stderr, "[TEXEMPTY] off=0x%08X %ux%u fmt=0x%02X -> magenta%c",
                          off, w, h, fmt, 10); }
          }
-@@ -4148,7 +4158,7 @@ static void render_frame(void)
+@@ -4155,7 +4156,7 @@ static void render_frame(void)
                  static int en = -1;
                  if (en < 0) { const char* e = getenv("SCREEN_AS_TEX"); en = e ? atoi(e) : 1; }
                  if (en) {
@@ -105,7 +75,7 @@ index d629f72..294a3aa 100644
                          fprintf(stderr, "[SCREENTEX] bound frame copy at unit %d for"
                                          " fp=0x%X (%ux%u)%c", _u, dr->fp_addr,
                                  dr->tex[_u].w, dr->tex[_u].h, 10); }
-@@ -4170,7 +4180,7 @@ static void render_frame(void)
+@@ -4177,7 +4178,7 @@ static void render_frame(void)
                      for (u32 i5 = 0; i5 < sz && i5 < 0x20000u; i5 += 997)
                          if (vm_base[dr->tex[_u].off + i5]) { nz = 1; break; }
                      if (!nz) {
@@ -114,7 +84,7 @@ index d629f72..294a3aa 100644
                              fprintf(stderr, "[SUBVP] unit %d fp=0x%X <- captured %ux%u%c",
                                      _u, dr->fp_addr, dr->tex[_u].w, dr->tex[_u].h, 10); }
                          srv_write(wslot, s_subvp[hit].res, DXGI_FORMAT_R8G8B8A8_UNORM,
-@@ -4524,7 +4534,7 @@ static void render_frame(void)
+@@ -4531,7 +4532,7 @@ static void render_frame(void)
                            }
                            s_d3d.cmd_list->lpVtbl->DrawInstanced(s_d3d.cmd_list, 3, 1, 1000, 0);
                            { static int _n = 0;
@@ -123,7 +93,7 @@ index d629f72..294a3aa 100644
                                                    want, s_d3d.off_rt[want].off, 10); }
                        } }
                      cur_rt = want;
-@@ -4676,7 +4686,7 @@ static void render_frame(void)
+@@ -4683,7 +4684,7 @@ static void render_frame(void)
      { const char* mp = getenv("MEMPEEK");
        if (mp) { extern uint8_t* vm_base; static int _n = 0;
          u32 addr = 0; int cnt = 8; sscanf(mp, "%x:%d", &addr, &cnt);
@@ -132,7 +102,7 @@ index d629f72..294a3aa 100644
              float lo = 1e30f, hi = -1e30f; u32 nz = 0;
              for (int i = 0; i < cnt; i++) {
                  const u8* q = vm_base + addr + i * 4;
-@@ -5583,7 +5593,7 @@ static u32 upload_quads_vp(const rsx_state* state, u32 first, u32 count)
+@@ -5590,7 +5591,7 @@ static u32 upload_quads_vp(const rsx_state* state, u32 first, u32 count)
          /* quad -> two triangles (perimeter winding) */
          static const int idx[6] = {0,1,2, 0,2,3};
          for (int t = 0; t < 6; t++) { memcpy(&out[o*16], c[idx[t]], sizeof(c[0])); o++; }
@@ -141,7 +111,7 @@ index d629f72..294a3aa 100644
              FILE* f = fopen("vtx_dump.txt", _n==1 ? "w" : "a");
              if (f) { for (u32 k = 0; k < 4; k++)
                  fprintf(f, "q%02d v%u a0=(%.3f,%.3f,%.3f,%.3f) a8=(%.3f,%.3f)\n", _n, k,
-@@ -5606,7 +5616,7 @@ static u32 upload_tris_vp(const rsx_state* state, u32 first, u32 count)
+@@ -5613,7 +5614,7 @@ static u32 upload_tris_vp(const rsx_state* state, u32 first, u32 count)
      vp_attrs_dbg(state);
      u32 maxv = (MAX_VERTICES * VP_VERT_STRIDE - s_d3d.vp_vb_offset) / VP_VERT_STRIDE;
      if (count > maxv) { s_drop_draws++;
@@ -150,7 +120,7 @@ index d629f72..294a3aa 100644
              fprintf(stderr, "[VBFULL] fp=0x%X wanted %u verts, room for %u%c",
                      state->shader_program, count, maxv, 10); }
          count = maxv - (maxv % 3); }
-@@ -5620,7 +5630,7 @@ static u32 upload_tris_vp(const rsx_state* state, u32 first, u32 count)
+@@ -5627,7 +5628,7 @@ static u32 upload_tris_vp(const rsx_state* state, u32 first, u32 count)
      { static const char* ie = (const char*)1; static u32 iw = 0;
        if (ie == (const char*)1) { ie = getenv("IDXDBG");
            iw = ie ? (u32)strtoul(ie, NULL, 16) : 0; }
@@ -159,7 +129,7 @@ index d629f72..294a3aa 100644
            fprintf(stderr, "[IDXDBG] tris first=%u count=%u a0off=0x%X stride=%u%c",
                    first, count, state->vertex_attribs[0].offset,
                    state->vertex_attribs[0].stride, 10); } }
-@@ -5645,7 +5655,7 @@ static u32 upload_tris_vp(const rsx_state* state, u32 first, u32 count)
+@@ -5652,7 +5653,7 @@ static u32 upload_tris_vp(const rsx_state* state, u32 first, u32 count)
          fprintf(stderr, "%c", 10);
        } }
      if (getenv("VTX_DUMP") && state->surface_color_offset[0] == 0xCC0000) {
@@ -168,7 +138,7 @@ index d629f72..294a3aa 100644
          FILE* f = fopen("vtx_dump.txt", "w");
          if (f) { fprintf(f, "G-buffer draw surf0=0x%X count=%u first=%u\n",
                           state->surface_color_offset[0], count, first);
-@@ -5725,7 +5735,7 @@ static u32 upload_quads_vp_indexed(const rsx_state* state, u32 first, u32 count)
+@@ -5732,7 +5733,7 @@ static u32 upload_quads_vp_indexed(const rsx_state* state, u32 first, u32 count)
              read_vp_vertex(state, read_guest_index(state, first + q*4 + k), c[k]);
          static const int idx[6] = {0,1,2, 0,2,3};
          for (int t = 0; t < 6; t++) { memcpy(&out[o*16], c[idx[t]], sizeof(c[0])); o++; }
@@ -177,7 +147,7 @@ index d629f72..294a3aa 100644
              FILE* f = fopen("vtx_dump.txt", _n==1 ? "w" : "a");
              if (f) {
                  const float* vs_ = state->viewport_scale;
-@@ -5757,7 +5767,7 @@ static u32 upload_tris_vp_indexed(const rsx_state* state, u32 first, u32 count)
+@@ -5764,7 +5765,7 @@ static u32 upload_tris_vp_indexed(const rsx_state* state, u32 first, u32 count)
      vp_attrs_dbg(state);
      u32 maxv = (MAX_VERTICES * VP_VERT_STRIDE - s_d3d.vp_vb_offset) / VP_VERT_STRIDE;
      if (count > maxv) { s_drop_draws++;
@@ -186,7 +156,7 @@ index d629f72..294a3aa 100644
              fprintf(stderr, "[VBFULL] fp=0x%X wanted %u verts, room for %u%c",
                      state->shader_program, count, maxv, 10); }
          count = maxv - (maxv % 3); }
-@@ -5773,7 +5783,7 @@ static u32 upload_tris_vp_indexed(const rsx_state* state, u32 first, u32 count)
+@@ -5780,7 +5781,7 @@ static u32 upload_tris_vp_indexed(const rsx_state* state, u32 first, u32 count)
      { static const char* ie = (const char*)1; static u32 iw = 0;
        if (ie == (const char*)1) { ie = getenv("IDXDBG");
            iw = ie ? (u32)strtoul(ie, NULL, 16) : 0; }

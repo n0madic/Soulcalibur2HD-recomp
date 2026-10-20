@@ -14,10 +14,10 @@ Resolve out of a surface held at sample resolution: a 1/k downscale on the GPU (
 - RSX_ENGINE_GPU_RESOLVE=0 turns it off, as for the 1:1 resolve.
 
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index 95e6f3f..6415b40 100644
+index b24480ca..b008c6bb 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
-@@ -1248,7 +1248,9 @@ static void nv3089_blit(void)
+@@ -1302,7 +1302,9 @@ static void nv3089_blit(void)
          if (rsx_draw_engine_resolve_read(sloc, s_nv3089.in_off + (v0 >> 4) * in_pitch + (u0 >> 4) * 4u, in_pitch,
                                           s_nv3089.ds_dx, s_nv3089.dt_dy, dloc,
                                           s_gcm2d.dst_offset + out_y * dst_pitch + out_x * 4u, dst_pitch,
@@ -29,10 +29,10 @@ index 95e6f3f..6415b40 100644
      }
      if (bpp == 4) nv3089_engine_read(in_pitch, out_w, out_h);
 diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
-index 37e56c3..1d0d52c 100644
+index f3619a84..6bb25a5f 100644
 --- a/libs/video/rsx_draw_engine.c
 +++ b/libs/video/rsx_draw_engine.c
-@@ -830,11 +830,22 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
+@@ -885,11 +885,22 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
   * the old store of every resolve for a title that does.
   */
  
@@ -57,7 +57,7 @@ index 37e56c3..1d0d52c 100644
  }
  
  static int eng_resolve_overlaps(const eng_resolve* r, u32 location, u32 offset, u32 bytes)
-@@ -996,15 +1007,50 @@ static u32 eng_resolve_texture(const rsx_dsp_texture* t)
+@@ -1051,15 +1062,51 @@ static u32 eng_resolve_texture(const rsx_dsp_texture* t)
   * Writes the resolved rectangle straight into the destination in guest memory (32-bit pixels).
   * Returns 0 when the source is not such a surface (the caller falls back to the guest-memory
   * copy). */
@@ -73,7 +73,8 @@ index 37e56c3..1d0d52c 100644
 +    if (k > 4u || !eng_gpu_downscale_enabled()) return 0;
 +    u32 gx = 0, gy = 0;
 +    const u32 slot = eng_surface_at(src_loc, src_offset, src_pitch, &gx, &gy);
-+    if (slot == ENG_INVALID) return 0;
++    if (slot == ENG_INVALID || g.surfaces[slot].fmt != RSX_BE_FMT_R8G8B8A8) return 0;
++    gx /= 4u;                                                /* the position comes back in bytes */
 +    const eng_surface* s = &g.surfaces[slot];
 +    if (s->w % k || s->h % k || s->w / k < 2u) return 0;
 +    const u32 ow = s->w / k, oh = s->h / k;
@@ -107,14 +108,14 @@ index 37e56c3..1d0d52c 100644
 +    if (slot == ENG_INVALID)
 +        return linear && eng_resolve_downscale(src_loc, src_offset, src_pitch, k,
 +                                               dst_loc, dst_offset, dst_pitch, out_w, out_h);
+     gx /= 4u;                                   /* the position comes back in bytes; the surface is A8R8G8B8 */
      const eng_surface* s = &g.surfaces[slot];
      const u32 sx = gx / k, sy = gy / k;
-     if (sx >= s->w || sy >= s->h) return 1;                           /* beyond the picture: nothing to copy */
 diff --git a/libs/video/rsx_draw_engine.h b/libs/video/rsx_draw_engine.h
-index ce76a6b..0a12e64 100644
+index 77b71a9c..65423c54 100644
 --- a/libs/video/rsx_draw_engine.h
 +++ b/libs/video/rsx_draw_engine.h
-@@ -239,6 +239,15 @@ typedef struct rsx_draw_backend {
+@@ -252,6 +252,15 @@ typedef struct rsx_draw_backend {
       * surface) on the GPU with it rather than reading the picture back. */
      int  (*color_target_copy)(void* user, u32 dst, u32 dx, u32 dy, u32 src,
                                u32 sx, u32 sy, u32 w, u32 h);
@@ -130,7 +131,7 @@ index ce76a6b..0a12e64 100644
  } rsx_draw_backend;
  
  /* ---- the engine --------------------------------------------------------- */
-@@ -301,9 +310,10 @@ void rsx_draw_engine_note_flip(u32 buffer_id);
+@@ -314,9 +323,10 @@ void rsx_draw_engine_note_flip(u32 buffer_id);
   * out with the same pitch take part; anything else is left alone. */
  void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32 h);
  /* Scaled blit out of a supersampled colour surface, straight into guest memory; see the definition.
@@ -144,7 +145,7 @@ index ce76a6b..0a12e64 100644
  /* A 2D transfer is about to read or write guest bytes [offset, offset + bytes)
   * on the CPU: any resolve the engine kept on the GPU there is stored into guest
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index dec1669..5fe0300 100644
+index 3718fb50..de99cdb2 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
 @@ -2300,7 +2300,7 @@ static void release_surfaces(void)
@@ -170,11 +171,11 @@ index dec1669..5fe0300 100644
  static id<MTLRenderPipelineState> s_eng_depth_pso;
 +static id<MTLRenderPipelineState> s_eng_resolve_pso;
  static id<MTLSamplerState>        s_eng_point_sampler;
- static id<MTLRenderPipelineState> s_eng_fxaa_pso;
- static id<MTLTexture>             s_loading_tex;      /* the boot "Loading..." text */
-@@ -2433,6 +2435,18 @@ static void release_surfaces(void)
- "    if (horz) fuv.y += finalOff * stepLen; else fuv.x += finalOff * stepLen;\n"
- "    return float4(src.sample(s, fuv).rgb, cM.a);\n"
+ static id<MTLSamplerState>        s_eng_linear_sampler;   /* FXAA's taps */
+ 
+@@ -2520,6 +2522,18 @@ static void eng_post_options(void)
+ "    else           posM.y += pixelOffsetSubpix * lengthSign;\n"
+ "    return float4(t.sample(s, posM).rgb, rgbyM.a);\n"
  "}\n"
 +"/* color_target_resolve: the linear sample at the centre of this pixel's k x k block of the source, the blocks\n"
 +"   starting at (a.xy); the destination rectangle starts at (a.zw), the source is b.yz texels, b.x is k. The\n"
@@ -191,15 +192,15 @@ index dec1669..5fe0300 100644
  "fragment float eng_depth_fs(BOut i [[stage_in]],\n"
  "                            depth2d<float> src [[texture(0)]],\n"
  "                            sampler s [[sampler(0)]]) {\n"
-@@ -2584,6 +2598,7 @@ static void eng_shutdown(void* user)
+@@ -2674,6 +2688,7 @@ static void eng_shutdown(void* user)
      s_eng_helper_lib = nil;
      s_eng_blit_pso = nil;
      s_eng_depth_pso = nil;
 +    s_eng_resolve_pso = nil;
      s_eng_point_sampler = nil;
+     s_eng_linear_sampler = nil;
      s_eng_fxaa_pso = nil;
-     s_loading_tex = nil;
-@@ -2711,6 +2726,44 @@ static u32 eng_color_snapshot(void* user, u32 surface)
+@@ -2842,6 +2857,44 @@ static u32 eng_color_snapshot(void* user, u32 surface)
      return copy;
  }
  
@@ -244,7 +245,7 @@ index dec1669..5fe0300 100644
  static u32 eng_depth_target_create(void* user, u32 w, u32 h)
  {
      (void)user;
-@@ -3200,6 +3253,32 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3381,6 +3434,32 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              [copy endEncoding];
              continue;
          }
@@ -277,7 +278,7 @@ index dec1669..5fe0300 100644
          if (s_eng_rec[i].kind == ENG_REC_DEPTH_RESOLVE) {
              const EngRecord* r = &s_eng_rec[i++];
              id<MTLTexture> src = eng_obj(r->depth);
-@@ -3233,7 +3312,8 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3415,7 +3494,8 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
          u8 cstencil = 0;
          while (i < s_eng_rec_count && s_eng_rec[i].kind != ENG_REC_DRAW &&
                 s_eng_rec[i].kind != ENG_REC_DEPTH_RESOLVE &&
@@ -287,7 +288,7 @@ index dec1669..5fe0300 100644
              const EngRecord* r = &s_eng_rec[i];
              if (r->kind == ENG_REC_CLEAR_COLOR) {
                  u32 k = 0;
-@@ -3688,6 +3768,7 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
+@@ -3943,6 +4023,7 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
      .depth_snapshot       = eng_depth_snapshot,
      .depth_readback       = eng_depth_readback,
      .color_snapshot       = eng_color_snapshot,
@@ -296,10 +297,10 @@ index dec1669..5fe0300 100644
      .pipeline_release     = eng_pipeline_release,
      .bind_targets         = eng_bind_targets,
 diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
-index f06abad..2378b18 100644
+index da43ce18..be82da4f 100644
 --- a/libs/video/rsx_vulkan_backend.c
 +++ b/libs/video/rsx_vulkan_backend.c
-@@ -2641,6 +2641,59 @@ static int vk_eng_color_target_copy(void* user, u32 dst, u32 dx, u32 dy, u32 src
+@@ -2743,6 +2743,59 @@ static int vk_eng_color_target_copy(void* user, u32 dst, u32 dx, u32 dy, u32 src
      return 0;
  }
  
@@ -359,7 +360,7 @@ index f06abad..2378b18 100644
  /* ---- E3: textures ---------------------------------------------------------
   * The engine decodes every level to host rows (rsx_texture_decode) and hands
   * them over one upload each; the crossbar is a property of the view, so it
-@@ -3588,6 +3641,7 @@ static const rsx_draw_backend s_vk_engine_backend = {
+@@ -3771,6 +3824,7 @@ static const rsx_draw_backend s_vk_engine_backend = {
      .depth_readback       = vk_eng_depth_readback,
      .color_target_write   = vk_eng_color_target_write,
      .color_target_copy    = vk_eng_color_target_copy,
