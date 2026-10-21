@@ -9,6 +9,9 @@ SPURS HLE and SPU runtime: workloads, wake-ups, thread images, diagnostics.
 - spu_register_ls_hook, SPU_GETLOG=<lo>,<hi> (log MFC transfers touching an LS range), lr in the "synthesised stop"
   message.
 - The WAIT_SIGNAL wait and wake share one lock/broadcast/timed-wait helper set (spu_workload.c).
+- mfc_for reads SPU_PCSAMPLE once (toolkit v0.17.0 looked it up on every MFC channel access while it was unset;
+  getenv walks the environment, and the DSP thread of the game's audio engine ran at half speed: about every
+  second audio block was silent in a fight, and the sound was choppy and rough).
 
 ---
 
@@ -99,10 +102,29 @@ index 19a8516f..f72ada50 100644
  }
  
 diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
-index 59f5e4b8..fe42f385 100644
+index 59f5e4b8..37bac44f 100644
 --- a/runtime/spu/spu_channels.c
 +++ b/runtime/spu/spu_channels.c
-@@ -1627,6 +1627,33 @@ static int spu_taskset_resident_image(const spu_context* ctx)
+@@ -319,9 +319,15 @@ static DWORD WINAPI spu_pcsample_thread(LPVOID p)
+ 
+ static mfc_engine* mfc_for(spu_context* ctx)
+ {
+-    { static volatile LONG started = 0; const char* e;
+-      if (!started && (e = getenv("SPU_PCSAMPLE")) && !InterlockedExchange(&started, 1))
+-          CreateThread(NULL, 0, spu_pcsample_thread, (LPVOID)(uintptr_t)(atoi(e) * 1000), 0, NULL); }
++    /* SPU_PCSAMPLE is read once. This runs on every MFC channel access, and getenv walks the whole
++     * environment: unset, the variable was looked up on every one of them, which halved the rate of an
++     * SPU program that talks to its MFC in a tight loop (a title's audio DSP thread, choppy sound). */
++    { static volatile LONG s_pcsample = -1;   /* -1 not read yet, 0 off, 1 sampler started */
++      if (s_pcsample < 0) {
++          const char* e = getenv("SPU_PCSAMPLE");
++          if (InterlockedCompareExchange(&s_pcsample, e ? 1 : 0, -1) == -1 && e)
++              CreateThread(NULL, 0, spu_pcsample_thread, (LPVOID)(uintptr_t)(atoi(e) * 1000), 0, NULL);
++      } }
+     AcquireSRWLockShared(&s_mfc_claim_lock);
+     for (spu_mfc_slot* slot = s_mfc_slots; slot; slot = slot->next) {
+         if (slot->ctx == ctx) {
+@@ -1627,6 +1633,33 @@ static int spu_taskset_resident_image(const spu_context* ctx)
   * at LS 0x3000 (below it is the SPURS kernel/policy/context, 0x290..0x2FFF). */
  #define SPU_TASKSET_TASK_LO 0x3000u
  
@@ -136,7 +158,7 @@ index 59f5e4b8..fe42f385 100644
  /* Content-signature variant: FMOD COPIES codec overlays to the heap before
   * streaming them into the swap slot, so the source EA is unknowable ahead of
   * time -- match the first 16 bytes of the streamed content instead. */
-@@ -1917,9 +1944,14 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
+@@ -1917,9 +1950,14 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
              }
              yz_lockstep_block_begin(ctx);
              spu_taskset_parked_add(ts, tid, wobj);
@@ -152,7 +174,7 @@ index 59f5e4b8..fe42f385 100644
              spu_ef_deliver_owed(ctx, wobj);
          }
          ctx->gpr[3]._u32[0] = 0;
-@@ -2332,6 +2364,7 @@ void spu_indirect_branch(spu_context* ctx)
+@@ -2332,6 +2370,7 @@ void spu_indirect_branch(spu_context* ctx)
       * the job" and reported stop_code 0, which reads as a runaway and sent a long
       * chase after phantom memory corruption. Decode the target word instead: a
       * `stop` is opcode 0 in the top 11 bits, so this is unambiguous. */
@@ -160,7 +182,7 @@ index 59f5e4b8..fe42f385 100644
      if (!fn) {
          uint32_t p0 = ctx->pc & SPU_LS_MASK;
          if (p0 + 3 < SPU_LS_SIZE) {
-@@ -2341,8 +2374,8 @@ void spu_indirect_branch(spu_context* ctx)
+@@ -2341,8 +2380,8 @@ void spu_indirect_branch(spu_context* ctx)
                  ctx->stop_code = w & 0x3FFFu;
                  static int _n = 0;
                  if (PS3_LOG_FIRST(_n, 8))
