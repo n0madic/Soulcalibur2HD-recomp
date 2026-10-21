@@ -70,6 +70,9 @@ if [[ "$(cat "$PATCH_STAMP" 2>/dev/null)" != "$PATCH_ID" ]]; then
   git -C "$TOOLKIT" checkout -q -f "$TOOLKIT_REV"
   git -C "$TOOLKIT" clean -fdq
   rm -f "$PATCH_STAMP"
+  # The toolkit generates its NID -> handler table from the sources of libs/ at build time, but its build rule only
+  # depends on the generator: a table made for the previous revision would still name functions that are gone.
+  rm -f "$BUILD"/host*/gen/ppu_hle_nids.cpp
   for p in "${PATCHES[@]}"; do
     git -C "$TOOLKIT" apply "$p" || { echo "patch does not apply: $p" >&2; exit 1; }
   done
