@@ -7,6 +7,8 @@ Module access and portability: separate game module, optional LGPL decoder, MinG
 - ppu_loader.cpp builds with MinGW GCC: the profiling sampler (PS3_SAMPLE_*) reads the sampled thread's stack through
   ReadProcessMemory there (GCC has no structured exception handling), and ppu_resv_break is not declared extern "C"
   and defined static afterwards.
+- timespec_get is not declared by the MinGW msvcrt headers (only for UCRT): spu_interp.c's profiling sampler falls
+  back to time(), spu_workload.c's job profiler uses clock_gettime like the rest of the file.
 
 ---
 
@@ -158,3 +160,39 @@ index 9d9df717..cc4159f5 100644
  
  /* Drain pending trampolines after any call that might set g_trampoline_fn.
   * Converts cross-fragment fallthrough chains into iterative loops. */
+diff --git a/runtime/spu/spu_interp.c b/runtime/spu/spu_interp.c
+index 90a2f77..bc7ffb2 100644
+--- a/runtime/spu/spu_interp.c
++++ b/runtime/spu/spu_interp.c
+@@ -467,8 +467,13 @@ uint32_t spu_interp_run_until(spu_context* ctx, uint32_t start_lsa, uint32_t sto
+             }
+             s_tot++;
+             if ((s_tot & 0xFFFF) == 0) {
++#if defined(_WIN32) && !defined(_UCRT)
++                /* the msvcrt headers of MinGW do not declare timespec_get; whole seconds are enough here */
++                unsigned long long now = (unsigned long long)time(NULL) * 1000ull;
++#else
+                 struct timespec ts; timespec_get(&ts, TIME_UTC);   /* stdlib: fixtures link this file alone */
+                 unsigned long long now = (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;
++#endif
+                 if (!s_t0) s_t0 = now;
+                 else if (now - s_t0 >= (unsigned long long)s_is * 1000ull) {
+                     fprintf(stderr, "[spu-interp] %.1fM steps/s over %lds; top pages:\n",
+diff --git a/runtime/spu/spu_workload.c b/runtime/spu/spu_workload.c
+index 9f792b4..0fcaff7 100644
+--- a/runtime/spu/spu_workload.c
++++ b/runtime/spu/spu_workload.c
+@@ -962,11 +962,11 @@ int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
+     static int s_prof = -1;
+     if (s_prof < 0) { const char* e = getenv("SPU_JOBPROF"); s_prof = e ? atoi(e) : 0; }
+     struct timespec t0, t1;
+-    if (s_prof) timespec_get(&t0, TIME_UTC);
++    if (s_prof) clock_gettime(CLOCK_REALTIME, &t0);
+     int rc = spu_run_spurs_job(fn, image_id, job_ea, job_desc_size);
+     if (s_prof) {
+         static double acc[64], last; static unsigned cnt[64];
+-        timespec_get(&t1, TIME_UTC);
++        clock_gettime(CLOCK_REALTIME, &t1);
+         double now = t1.tv_sec + t1.tv_nsec * 1e-9;
+         unsigned k = (unsigned)image_id & 63;
+         acc[k] += now - (t0.tv_sec + t0.tv_nsec * 1e-9); cnt[k]++;
