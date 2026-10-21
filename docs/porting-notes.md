@@ -154,6 +154,11 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
     4 ms minimum gap between two mixed blocks, measured from a `Sleep(1)` that wakes late, often left the game's audio
     thread less time than that. The mix is now paced on the 5.33 ms block clock with a high-resolution timer: 0% silent
     blocks and exactly 187.5 blocks a second (`AUDIO_RATE=1`, `AUDIO_WAV=`).
+  - Raspy hits and voices on Windows only, two causes (`AUDIO_RATE=1` shows both): the device ran dry (`patches/0003` kept it one or two blocks
+    ahead in a 20 ms buffer, a late wake of the mix thread was a click: up to 29 in 5 s; now 3 blocks ahead in a 100 ms buffer, mix thread
+    above the game's threads), and the game's audio engine (an emulated SPU program) fell behind its 5.33 ms blocks, so a sound starting
+    out of silence got only every other block for a few ticks ("holes"; 65 in 150 s of the title demos at normal priority, 7-15 at high).
+    `main.cpp` sets `HIGH_PRIORITY_CLASS` and opts out of power throttling.
   - What still held a fight at 20-35 frames a second was the frame thread (the one that drains the FIFO and presents):
     - `patches/0005`: the game resolves its 2x supersampled scene with six NV3089 tiles into VRAM and draws that to the
       screen with one full-screen pass; the engine read the scene back mid-frame, stored it into guest memory and then

@@ -614,6 +614,19 @@ int main(int argc, char** argv)
      * inflates every shorter wait the title makes and throttles the whole
      * thing. POSIX timers are already fine-grained. */
     timeBeginPeriod(1);
+    /* The game's audio engine is an SPU program that must finish a 5.33 ms block in less than 5.33 ms of host time;
+     * emulated, it runs close to that, and at the default priority a Windows machine with anything else going on
+     * (a laptop's efficiency cores, a background scan) let it fall behind: every other block of a new sound came out
+     * empty, a rasp on every hit and voice (65 such blocks in 150 s of the title demos at normal priority, 7 at
+     * high). Windows may also run a process it thinks is in the background on the efficiency cores, which this
+     * opts out of. */
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    {
+        PROCESS_POWER_THROTTLING_STATE pt = {};
+        pt.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+        pt.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;   /* StateMask 0: do not throttle */
+        SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pt, sizeof pt);
+    }
     setvbuf(stdout, NULL, _IONBF, 0);   /* unbuffered: do not lose prints on a kill */
 #endif
 
