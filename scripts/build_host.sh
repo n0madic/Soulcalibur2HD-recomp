@@ -8,7 +8,7 @@
 #
 # Needs git, cmake, ninja, python3 (3.10+) and a C/C++ compiler (macOS: Xcode command line tools; Windows target: a
 # MinGW-w64 clang -- llvm-mingw, or on Windows WinLibs' LLVM build -- or the x86_64-w64-mingw32 g++ with the posix
-# thread model, see scripts/mingw-w64.cmake; Linux: the Vulkan and X11 headers, libvulkan-dev and libx11-dev on
+# thread model, see scripts/mingw-w64.cmake; Linux: the Vulkan and X11 headers, libvulkan-dev, libx11-dev and libxext-dev on
 # Debian, for the window, and the PulseAudio or ALSA ones, libpulse-dev / libasound2-dev, for sound). Layout (generated):
 #   build/ps3recomp/   pinned clone of github.com/sp00nznet/ps3recomp, with patches/ applied
 #   build/deps/        pinned sources and the static install prefix of SDL2, glslang, SPIRV-Tools, SPIRV-Cross
@@ -115,8 +115,8 @@ if [[ "$TARGET" == native && "$(uname -s)" == Linux ]]; then
   # The window is a Vulkan swapchain on an SDL2 window: SDL builds its X11 video driver only if it finds the headers,
   # and silently ends up with no driver (a headless host) otherwise.
   have_header() { echo "#include <$1>" | ${CC:-cc} -E -x c - >/dev/null 2>&1; }
-  for h in vulkan/vulkan.h X11/Xlib.h; do
-    have_header "$h" || { echo "missing header $h (Debian/Ubuntu: apt install libvulkan-dev libx11-dev)" >&2; exit 1; }
+  for h in vulkan/vulkan.h X11/Xlib.h X11/extensions/Xext.h; do
+    have_header "$h" || { echo "missing header $h (Debian/Ubuntu: apt install libvulkan-dev libx11-dev libxext-dev)" >&2; exit 1; }
   done
   # Likewise its audio drivers: without these headers SDL has only the dummy one and the game is silent.
   if [[ ! -f "$DEPS/sdl2.done" ]] && ! have_header pulse/pulseaudio.h && ! have_header alsa/asoundlib.h; then

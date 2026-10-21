@@ -128,7 +128,7 @@ derived from the game.
 - [docs/licensing.md](docs/licensing.md): the licenses of everything involved.
 
 To build the release yourself you need git, cmake, ninja, Python 3.10+ and a C/C++ compiler (on Linux also the Vulkan and X11
-headers, and the PulseAudio or ALSA headers for sound: `apt install libvulkan-dev libx11-dev libpulse-dev libasound2-dev`, and at
+headers, and the PulseAudio or ALSA headers for sound: `apt install libvulkan-dev libx11-dev libxext-dev libpulse-dev libasound2-dev`, and at
 run time a Vulkan driver such as `mesa-vulkan-drivers`):
 
 ```sh
