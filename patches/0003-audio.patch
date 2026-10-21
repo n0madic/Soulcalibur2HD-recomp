@@ -15,14 +15,32 @@ cellAudio: diagnostics, and a mix paced on the block clock on Windows.
   enough to run the device dry, tens of clicks in 5 s of a loading screen or a fight; the queue is primed with
   silence at the start and after a run-dry, and the clock is nudged by the queue's error so the device's own rate
   cannot walk it away. The mix thread runs above the game's threads, in the "Pro Audio" class of MMCSS.
+- Windows: the stream is opened in WASAPI raw mode where the device has it (PS3_AUDIO_NO_RAW=1 turns that off), so the
+  driver's effects (loudness equalisation, bass boost) do not colour or clip a loud hit, and a sum past 0.8 is bent
+  into the last 0.2 below full scale instead of cut flat.
 
 ---
 
 diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
-index 6f76df8..2110891 100644
+index 6f76df8..c48fa22 100644
 --- a/libs/audio/cellAudio.c
 +++ b/libs/audio/cellAudio.c
-@@ -144,6 +144,10 @@ static u64            s_audio_start_us = 0;
+@@ -73,12 +73,14 @@ extern uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size);
+   DEFINE_AUDIO_GUID(ps3r_CLSID_MMDeviceEnumerator, 0xBCDE0395,0xE52F,0x467C,0x8E,0x3D,0xC4,0x57,0x92,0x91,0x69,0x2E);
+   DEFINE_AUDIO_GUID(ps3r_IID_IMMDeviceEnumerator,  0xA95664D2,0x9614,0x4F35,0xA7,0x46,0xDE,0x8D,0xB6,0x36,0x17,0xE6);
+   DEFINE_AUDIO_GUID(ps3r_IID_IAudioClient,         0x1CB9AD4C,0xDBFA,0x4c32,0xB1,0x78,0xC2,0xF5,0x68,0xA7,0x03,0xB2);
++  DEFINE_AUDIO_GUID(ps3r_IID_IAudioClient2,        0x726778CD,0xF60A,0x4eda,0x82,0xDE,0xE4,0x76,0x10,0xCD,0x78,0xAA);
+   DEFINE_AUDIO_GUID(ps3r_IID_IAudioRenderClient,   0xF294ACFC,0x3146,0x4483,0xA7,0xBF,0xAD,0xDC,0xA7,0xC2,0x60,0xE2);
+ 
+   /* Map to the names used in the code */
+   #define IID_IMMDeviceEnumerator  ps3r_IID_IMMDeviceEnumerator
+   #define CLSID_MMDeviceEnumerator ps3r_CLSID_MMDeviceEnumerator
+   #define IID_IAudioClient         ps3r_IID_IAudioClient
++  #define IID_IAudioClient2        ps3r_IID_IAudioClient2
+   #define IID_IAudioRenderClient   ps3r_IID_IAudioRenderClient
+ #endif
+ 
+@@ -144,6 +146,10 @@ static u64            s_audio_start_us = 0;
  
  /* Mixing thread */
  static unsigned long long g_audio_dropped;   /* frames the device had no room for */
@@ -33,7 +51,7 @@ index 6f76df8..2110891 100644
  static volatile int  s_mix_thread_running = 0;
  static thread_t      s_mix_thread;
  #ifndef _WIN32
-@@ -189,6 +193,7 @@ static int audio_backend_init(void)
+@@ -189,6 +195,7 @@ static int audio_backend_init(void)
      }
  
      SDL_PauseAudioDevice(s_sdl_audio_dev, 0); /* Start playback */
@@ -41,20 +59,52 @@ index 6f76df8..2110891 100644
      return 0;
  }
  
-@@ -235,6 +240,12 @@ static IAudioRenderClient*  s_wasapi_render = NULL;
+@@ -235,7 +242,13 @@ static IAudioRenderClient*  s_wasapi_render = NULL;
  static HANDLE               s_wasapi_event  = NULL;
  static UINT32               s_wasapi_buf_frames = 0;
  
+-static int audio_backend_init(void)
 +/* How far ahead of the device the mix is kept. A thread that mixes on a 5.33 ms clock is late now and then on a busy
 + * machine (the SPU threads, the PPU and the frame thread take every core in a fight), and a queue of one block or
 + * two, which is what a 20 ms buffer filled on that clock holds, runs dry: a click, many of them a second in a
 + * fight, heard as a hoarse voice and hits. Three blocks (16 ms) ahead survive a late wake of 10 ms. */
 +#define AUDIO_WASAPI_LEAD  (CELL_AUDIO_BLOCK_SAMPLES * 3)
 +
- static int audio_backend_init(void)
++static int audio_backend_init_mode(int raw)
  {
      HRESULT hr;
-@@ -279,8 +290,8 @@ static int audio_backend_init(void)
+ 
+@@ -270,6 +283,29 @@ static int audio_backend_init(void)
+         return -1;
+     }
+ 
++    if (raw) {
++        /* Raw mode: the audio engine passes the stream to the device without the driver's effects (loudness
++         * equalisation, bass boost, "smart sound" processing), which colour or clip a loud hit. Not every device
++         * has it; then this fails and audio_backend_init tries again without. */
++        IAudioClient2* c2 = NULL;
++        if (SUCCEEDED(s_wasapi_client->lpVtbl->QueryInterface(s_wasapi_client, &IID_IAudioClient2, (void**)&c2)) && c2) {
++            AudioClientProperties props;
++            memset(&props, 0, sizeof props);
++            props.cbSize = sizeof props;
++            props.eCategory = AudioCategory_GameMedia;
++            props.Options = AUDCLNT_STREAMOPTIONS_RAW;
++            hr = c2->lpVtbl->SetClientProperties(c2, &props);
++            c2->lpVtbl->Release(c2);
++        } else {
++            hr = E_NOINTERFACE;
++        }
++        if (FAILED(hr)) {
++            s_wasapi_client->lpVtbl->Release(s_wasapi_client);
++            s_wasapi_client = NULL;
++            return -1;
++        }
++    }
++
+     WAVEFORMATEX wfx;
+     wfx.wFormatTag      = WAVE_FORMAT_IEEE_FLOAT;
+     wfx.nChannels       = 2;
+@@ -279,8 +315,8 @@ static int audio_backend_init(void)
      wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
      wfx.cbSize          = 0;
  
@@ -65,7 +115,21 @@ index 6f76df8..2110891 100644
      s_wasapi_event = CreateEventW(NULL, FALSE, FALSE, NULL);
  
      /* Shared mode only takes the device's own mix format unless the stream
-@@ -361,6 +372,17 @@ static void audio_backend_submit(const float* stereo_samples, u32 num_samples)
+@@ -335,6 +371,13 @@ static int audio_backend_init(void)
+     return 0;
+ }
+ 
++static int audio_backend_init(void)
++{
++    static int no_raw = -1; if (no_raw < 0) no_raw = getenv("PS3_AUDIO_NO_RAW") ? 1 : 0;
++    if (!no_raw && audio_backend_init_mode(1) == 0) { printf("[cellAudio] WASAPI raw mode\n"); return 0; }
++    return audio_backend_init_mode(0);
++}
++
+ static void audio_backend_shutdown(void)
+ {
+     if (s_wasapi_client) {
+@@ -361,6 +404,17 @@ static void audio_backend_submit(const float* stereo_samples, u32 num_samples)
      UINT32 padding = 0;
      s_wasapi_client->lpVtbl->GetCurrentPadding(s_wasapi_client, &padding);
  
@@ -83,7 +147,7 @@ index 6f76df8..2110891 100644
      UINT32 available = s_wasapi_buf_frames - padding;
      if (num_samples > available) {
          g_audio_dropped += num_samples - available;
-@@ -399,6 +421,14 @@ static int audio_backend_room(void)
+@@ -399,6 +453,14 @@ static int audio_backend_room(void)
      return (int)(s_wasapi_buf_frames - padding);
  }
  
@@ -98,7 +162,7 @@ index 6f76df8..2110891 100644
  /* Block until the device has consumed some of its buffer. */
  static void audio_backend_wait(void)
  {
-@@ -486,6 +516,14 @@ static void audio_mix_one_block(void)
+@@ -486,6 +548,14 @@ static void audio_mix_one_block(void)
                          p, (unsigned long long)port->read_index, block_idx, map);
              } } }
  
@@ -113,7 +177,23 @@ index 6f76df8..2110891 100644
          for (u32 s = 0; s < CELL_AUDIO_BLOCK_SAMPLES; s++) {
              float left, right;
              if (nch >= 2) {
-@@ -553,6 +591,26 @@ static void audio_notify_event_queues(void)
+@@ -529,6 +599,15 @@ static void audio_mix_one_block(void)
+ 
+     /* Clip to [-1.0, 1.0] */
+     for (u32 i = 0; i < CELL_AUDIO_BLOCK_SAMPLES * 2; i++) {
++#ifdef _WIN32
++        /* A loud hit that sums past full scale (the 7.1 downmix adds up to five channels to each side) was cut flat,
++         * which is a rasp; above 0.8 the peak is bent into the last 0.2 instead (continuous, slope 1 at the knee). */
++        const float a = s_mix_buffer[i] < 0 ? -s_mix_buffer[i] : s_mix_buffer[i];
++        if (a > 0.8f) {
++            const float x = (a - 0.8f) * 5.0f, t = x / (1.0f + x);   /* x/(1+x): 0 -> 0, slope 1, limit 1 */
++            s_mix_buffer[i] = (s_mix_buffer[i] < 0 ? -1.0f : 1.0f) * (0.8f + 0.2f * t);
++        }
++#endif
+         if (s_mix_buffer[i] > 1.0f) s_mix_buffer[i] = 1.0f;
+         if (s_mix_buffer[i] < -1.0f) s_mix_buffer[i] = -1.0f;
+     }
+@@ -553,6 +632,26 @@ static void audio_notify_event_queues(void)
      }
  }
  
@@ -140,7 +220,7 @@ index 6f76df8..2110891 100644
  #ifdef _WIN32
  static unsigned __stdcall audio_mix_thread_func(void* arg)
  {
-@@ -564,39 +622,80 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+@@ -564,39 +663,80 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
       * WASAPI buffer can never reach, so it mixed ~225 blocks/s and the device
       * dropped the surplus: 20% of the audio thrown away, and a guest mixer
       * (GH3's FMOD) that could not keep ahead of the read index played gaps.
@@ -244,7 +324,7 @@ index 6f76df8..2110891 100644
          audio_backend_submit(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES);
          /* AUDIO_RATE=1: blocks mixed vs real time, and frames dropped. */
          { static int on = -1; if (on < 0) on = getenv("AUDIO_RATE") ? 1 : 0;
-@@ -605,12 +704,13 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+@@ -605,12 +745,13 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
              { int nz = 0; for (u32 i = 0; i < CELL_AUDIO_BLOCK_SAMPLES * 2; i++) if (s_mix_buffer[i] != 0.0f) { nz = 1; break; }
                if (!nz) z++; }
              if (now - t0 >= 5000) {
@@ -261,7 +341,7 @@ index 6f76df8..2110891 100644
  #endif
                  n = z = 0; d0 = g_audio_dropped; t0 = now; } } }
  
-@@ -618,6 +718,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+@@ -618,6 +759,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
          audio_notify_event_queues();
      }
  
@@ -269,7 +349,7 @@ index 6f76df8..2110891 100644
      printf("[cellAudio] Mixing thread stopped\n");
      return 0;
  }
-@@ -627,10 +728,18 @@ static void* audio_mix_thread_func(void* arg)
+@@ -627,10 +769,18 @@ static void* audio_mix_thread_func(void* arg)
      (void)arg;
      printf("[cellAudio] Mixing thread started\n");
  

@@ -159,6 +159,7 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
     above the game's threads), and the game's audio engine (an emulated SPU program) fell behind its 5.33 ms blocks, so a sound starting
     out of silence got only every other block for a few ticks ("holes"; 65 in 150 s of the title demos at normal priority, 7-15 at high).
     `main.cpp` sets `HIGH_PRIORITY_CLASS` and opts out of power throttling.
+    Then WASAPI raw mode (no driver effects; `PS3_AUDIO_NO_RAW=1` for the shared-mode default) and a soft knee above 0.8 instead of a flat clip (76 clipped blocks in a 6-minute match).
   - What still held a fight at 20-35 frames a second was the frame thread (the one that drains the FIFO and presents):
     - `patches/0005`: the game resolves its 2x supersampled scene with six NV3089 tiles into VRAM and draws that to the
       screen with one full-screen pass; the engine read the scene back mid-frame, stored it into guest memory and then
