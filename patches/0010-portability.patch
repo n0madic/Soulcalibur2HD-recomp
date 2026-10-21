@@ -7,14 +7,11 @@ Module access and portability: separate game module, optional LGPL decoder, MinG
 - ppu_loader.cpp builds with MinGW GCC: the profiling sampler (PS3_SAMPLE_*) reads the sampled thread's stack through
   ReadProcessMemory there (GCC has no structured exception handling), and ppu_resv_break is not declared extern "C"
   and defined static afterwards.
-- Thread-local storage uses __thread unless the compiler is MSVC. GCC and MinGW ignore __declspec(thread) with only
-  a warning, so these variables were plain globals shared by every thread: the thread-exit jump buffer, the SPURS job
-  answer slots and the sysutil completion flag.
 
 ---
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 4e8f8985..15ed7844 100644
+index d0363544..61d6d7c5 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -76,9 +76,16 @@ endif()
@@ -38,7 +35,7 @@ index 4e8f8985..15ed7844 100644
  # Runtime core (syscalls, PPU, SPU, memory)
  file(GLOB_RECURSE RUNTIME_SOURCES
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index 972999ce..53d2e8b5 100644
+index 16213a49..10844d97 100644
 --- a/runtime/ppu/ppu_loader.cpp
 +++ b/runtime/ppu/ppu_loader.cpp
 @@ -627,7 +627,12 @@ static uint32_t samp_stack_guest(HANDLE h, const CONTEXT* c)
@@ -63,7 +60,7 @@ index 972999ce..53d2e8b5 100644
  static DWORD WINAPI poke_thread(LPVOID p)
  {
      const uint32_t ea  = (uint32_t)(uintptr_t)p;
-@@ -1967,6 +1972,9 @@ void flow_lookup_alloc(unsigned int p) {
+@@ -1986,6 +1991,9 @@ void flow_lookup_alloc(unsigned int p) {
  
  /* Cross-fragment trampoline pointer (matches the lifted header's TLS decl). */
  extern "C" PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*) = nullptr;
@@ -104,10 +101,10 @@ index 50036e35..2363008d 100644
  /* Central per-transfer hooks (stubbed in spu_drain.c until their milestones). */
  void yz_lockstep_tick(spu_context* ctx);             /* round-robin token gate */
 diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
-index 62ec5cd5..593c2ed3 100644
+index fc3cea12..237ebecd 100644
 --- a/runtime/spu/spu_drain.c
 +++ b/runtime/spu/spu_drain.c
-@@ -22,6 +22,11 @@ SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*) = 0;
+@@ -21,6 +21,11 @@ SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*) = 0;
  SPU_THREAD_LOCAL uint32_t g_spu_pch[8];
  SPU_THREAD_LOCAL unsigned g_spu_pch_n;
  
@@ -119,33 +116,6 @@ index 62ec5cd5..593c2ed3 100644
  /* yz_lockstep_tick now has its real body in spu_lockstep.c (milestone 2). */
  
  /* SPURS task-launch interception at a trampoline hop (milestone: SPURS kernel).
-diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
-index 0f470154..81c3bb37 100644
---- a/runtime/spu/spurs_job.c
-+++ b/runtime/spu/spurs_job.c
-@@ -146,8 +146,8 @@ const uint8_t* spurs_job_ls_for_handle(uint32_t handle)
- SPURS_JOB_TLS uint32_t g_spurs_job_mbox, g_spurs_job_mbox_intr;
- /* The command this job ran, read from its own command block. Only a query
-  * expects an answer back through the completion event. */
--SPURS_JOB_TLS uint32_t g_spurs_job_cmd;
--SPURS_JOB_TLS int g_spurs_job_mbox_valid;
-+SPU_THREAD_LOCAL uint32_t g_spurs_job_cmd;
-+SPU_THREAD_LOCAL int g_spurs_job_mbox_valid;
- 
- int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
-                       uint32_t job_ea, uint32_t job_desc_size)
-diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
-index 67145321..bdfc91a5 100644
---- a/runtime/syscalls/sys_ppu_thread.c
-+++ b/runtime/syscalls/sys_ppu_thread.c
-@@ -4,6 +4,7 @@
- 
- #include <setjmp.h>
- #include "ps3emu/log_first.h"
-+#include "../ppu/ppu_tls.h"   /* PPU_THREAD_LOCAL, for the thread-exit jump buffer below */
- 
- /* sys_ppu_thread_exit never returns on hardware. Returning CELL_OK to the
-  * guest lets it run on past the call: Twisted Metal has a thread that exits
 diff --git a/third_party/at3_stub/at3_stub.c b/third_party/at3_stub/at3_stub.c
 new file mode 100644
 index 00000000..9de4e969
@@ -167,7 +137,7 @@ index 00000000..9de4e969
 +    return -1;
 +}
 diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
-index 6e28f3b7..f23355bb 100644
+index 9d9df717..cc4159f5 100644
 --- a/tools/ppu_lifter.py
 +++ b/tools/ppu_lifter.py
 @@ -474,8 +474,16 @@ extern "C" void ps3_indirect_call_to(ppu_context* ctx, uint32_t target);

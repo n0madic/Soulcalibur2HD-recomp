@@ -16,7 +16,7 @@ Vulkan RSX backend on Windows, and its engine path batched.
 ---
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index ba0c65ef..4e8f8985 100644
+index 9e468f33..d0363544 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -47,11 +47,11 @@ list(FILTER HLE_SOURCES EXCLUDE REGEX "/tests/")
@@ -61,7 +61,7 @@ index ba0c65ef..4e8f8985 100644
      find_package(glslang CONFIG QUIET)
  
 diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
-index 5d8c0819..67fee3f5 100644
+index b22e08f6..fc1c04b5 100644
 --- a/libs/video/rsx_vulkan_backend.c
 +++ b/libs/video/rsx_vulkan_backend.c
 @@ -2,7 +2,7 @@
@@ -757,7 +757,7 @@ index 5d8c0819..67fee3f5 100644
          rc = vk_submit_and_wait();
          if (!rc) {
              vk_invalidate(&st);
-@@ -2752,14 +2975,11 @@ static struct {
+@@ -2756,14 +2979,11 @@ static struct {
      int          have_vp, have_sc;
      u32          stencil_ref;
      float        depth_bounds[2];     /* min, max for the next draw */
@@ -772,7 +772,7 @@ index 5d8c0819..67fee3f5 100644
      VkPipelineLayout      split_pipe_layout;
      u32                   dummy_cube;
  } s_e2;
-@@ -2770,6 +2990,7 @@ static u32 s_esamp_count;
+@@ -2774,6 +2994,7 @@ static u32 s_esamp_count;
  
  static void vk_eng_drop_framebuffers(void)
  {
@@ -780,7 +780,7 @@ index 5d8c0819..67fee3f5 100644
      for (u32 i = 0; i < s_e2.fb_count; i++)
          if (s_e2.fb[i].fb) pvkDestroyFramebuffer(s_vk.device, s_e2.fb[i].fb, NULL);
      s_e2.fb_count = 0;
-@@ -2901,23 +3122,11 @@ static VkPipelineLayout vk_eng_split_layout(void)
+@@ -2905,23 +3126,11 @@ static VkPipelineLayout vk_eng_split_layout(void)
                                                     VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
      VkDescriptorSetLayoutCreateInfo lci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                              .bindingCount = 3 + RSX_MAX_TEXTURES, .pBindings = b };
@@ -806,7 +806,7 @@ index 5d8c0819..67fee3f5 100644
          s_e2.split_pipe_layout = VK_NULL_HANDLE;
          return VK_NULL_HANDLE;
      }
-@@ -2974,6 +3183,7 @@ static void vk_eng_pipeline_release(void* user, u32 pipeline)
+@@ -2984,6 +3193,7 @@ static void vk_eng_pipeline_release(void* user, u32 pipeline)
  {
      (void)user;
      if (!pipeline || pipeline > VK_ENG_MAX_PIPE || !s_epipe[pipeline - 1].used) return;
@@ -814,7 +814,7 @@ index 5d8c0819..67fee3f5 100644
      vk_eng_pipe* P = &s_epipe[pipeline - 1];
      for (u32 t = 0; t < VK_ENG_TOPOLOGIES; t++)
          if (P->variant[t]) pvkDestroyPipeline(s_vk.device, P->variant[t], NULL);
-@@ -3100,25 +3310,25 @@ static void vk_eng2_shutdown(void* user)
+@@ -3110,25 +3320,25 @@ static void vk_eng2_shutdown(void* user)
      for (u32 f = 0; f < VK_ENG_RT_FORMATS; f++)
          for (u32 n = 0; n <= RSX_BE_MAX_COLOR_TARGETS; n++)
              if (s_e2.rp[f][n]) pvkDestroyRenderPass(s_vk.device, s_e2.rp[f][n], NULL);
@@ -845,7 +845,7 @@ index 5d8c0819..67fee3f5 100644
      s_e2.vs_bytes = bytes;
  }
  static void vk_eng_bind_ps_constants(void* user, const void* data, u32 bytes)
-@@ -3126,8 +3336,9 @@ static void vk_eng_bind_ps_constants(void* user, const void* data, u32 bytes)
+@@ -3136,8 +3346,9 @@ static void vk_eng_bind_ps_constants(void* user, const void* data, u32 bytes)
      (void)user;
      if (!s_g.on || !data) { s_e2.ps_bytes = 0; return; }
      const u32 cap = (u32)(s_g.ubo.size - s_g.ps_off);
@@ -856,7 +856,7 @@ index 5d8c0819..67fee3f5 100644
      s_e2.ps_bytes = bytes;
  }
  static void vk_eng_bind_textures(void* user, const u32* textures,
-@@ -3217,16 +3428,6 @@ static VkImageView vk_eng_scratch_depth(u32 w, u32 h)
+@@ -3227,16 +3438,6 @@ static VkImageView vk_eng_scratch_depth(u32 w, u32 h)
      return s_e2.scratch_depth.view;
  }
  
@@ -873,7 +873,7 @@ index 5d8c0819..67fee3f5 100644
  /* rsx_be_sampler_desc is the registers decoded the D3D12 way; the wrap codes
   * stay the guest's 1..8, which vk_gcm_wrap already translates. */
  static VkSampler vk_eng_sampler(const rsx_be_sampler_desc* d)
-@@ -3289,16 +3490,22 @@ static VkImageView vk_eng_dummy_cube_view(void)
+@@ -3299,16 +3500,22 @@ static VkImageView vk_eng_dummy_cube_view(void)
  /* Fill the set the bound pipeline uses: the shared one (sixteen textures in
   * one binding), or for a pipeline with cube units the split one (one binding
   * per unit). Returns the set, or VK_NULL_HANDLE. */
@@ -902,7 +902,7 @@ index 5d8c0819..67fee3f5 100644
      };
      VkDescriptorImageInfo ii[RSX_MAX_TEXTURES], si[RSX_MAX_TEXTURES];
      for (u32 u = 0; u < RSX_MAX_TEXTURES; u++) {
-@@ -3370,25 +3577,42 @@ static void vk_eng_draw(void* user, rsx_topology topology, const void* vertices,
+@@ -3380,25 +3587,42 @@ static void vk_eng_draw(void* user, rsx_topology topology, const void* vertices,
      VkFramebuffer fb = vk_eng_framebuffer(rp, s_eng_bound.rt, n, dview, dkey, w, h);
      if (!pipe || !rp || !fb) return;
  
@@ -961,7 +961,7 @@ index 5d8c0819..67fee3f5 100644
      pvkCmdBindPipeline(s_vk.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
      VkViewport vp = { 0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f };
      if (s_e2.have_vp && s_e2.vp[2] > 0.0f && s_e2.vp[3] > 0.0f) {
-@@ -3411,16 +3635,13 @@ static void vk_eng_draw(void* user, rsx_topology topology, const void* vertices,
+@@ -3421,16 +3645,13 @@ static void vk_eng_draw(void* user, rsx_topology topology, const void* vertices,
      pvkCmdBindDescriptorSets(s_vk.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                               P->cube_mask ? s_e2.split_pipe_layout : s_g.pipe_layout,
                               0, 1, &set, 0, NULL);
@@ -981,7 +981,7 @@ index 5d8c0819..67fee3f5 100644
  }
  
  static const rsx_draw_backend s_vk_engine_backend = {
-@@ -3457,6 +3678,7 @@ static const rsx_draw_backend s_vk_engine_backend = {
+@@ -3467,6 +3688,7 @@ static const rsx_draw_backend s_vk_engine_backend = {
      .readback             = vk_eng_readback,
      .depth_readback       = vk_eng_depth_readback,
      .color_target_write   = vk_eng_color_target_write,
@@ -989,7 +989,7 @@ index 5d8c0819..67fee3f5 100644
  };
  
  static rsx_backend s_vulkan_backend = {
-@@ -3683,7 +3905,7 @@ void rsx_vulkan_backend_shutdown(void)
+@@ -3693,7 +3915,7 @@ void rsx_vulkan_backend_shutdown(void)
          pvkDestroyDevice(s_vk.device, NULL);
      }
      if (s_vk.instance && pvkDestroyInstance) pvkDestroyInstance(s_vk.instance, NULL);
@@ -998,7 +998,7 @@ index 5d8c0819..67fee3f5 100644
      free(s_vk.cpu_verts);
      pthread_mutex_destroy(&s_vk.queue_mu);
      pthread_mutex_destroy(&s_vk.present_mu);
-@@ -3748,4 +3970,4 @@ int rsx_vulkan_backend_depth_bounds(void)
+@@ -3758,4 +3980,4 @@ int rsx_vulkan_backend_depth_bounds(void)
      return s_vk.eng_active && s_vk.depth_bounds_ok;
  }
  

@@ -1,6 +1,6 @@
 # Porting notes
 
-What had to be changed in the [ps3recomp](https://github.com/sp00nznet/ps3recomp) toolkit (pinned at `749182ee`, v0.16.0)
+What had to be changed in the [ps3recomp](https://github.com/sp00nznet/ps3recomp) toolkit (pinned at `a6d76c89`, v0.17.0)
 and added around it to make Soulcalibur II HD Online (PS3, version 01.00 or with update 01.01) run. The changes to the toolkit are `patches/`, applied
 in order to a fresh clone by `scripts/build_host.sh` (one patch per area, each with its own description; see "Patches" below); the port's own code is in `src/`. The toolkit's README lists macOS as
 "runs a recompiled game: no": its boot scaffold had never been booted on macOS before this port.
@@ -11,39 +11,41 @@ in order to a fresh clone by `scripts/build_host.sh` (one patch per area, each w
   RSX FIFO was never drained and the game waited forever on its first fence label.
 - `main.cpp`: reads `PARAM.SFO` (`PS3_PARAM_SFO`) so `cellGame` knows title id and category.
 - `cellGameBootCheck` reports an HDD game for `CATEGORY=HG` (the game aborts unless the type is 2); the toolkit does so since v0.16.0 (#359).
-- `sc2hd_hle.cpp`: the cellFiber scheduler API (`InitializeScheduler/CreateFiber/RunFibers/WaitSignal/SendSignal/JoinFiber/
-  FinalizeScheduler`, on ucontext), `_sys_spu_printf_initialize`, `sceNpDrmIsAvailable`. The toolkit has none of these.
+- `sc2hd_hle.cpp`: `_sys_spu_printf_initialize`, `sceNpDrmIsAvailable`, the `*WithRevision` font entry points. The cellFiber scheduler API
+  (`InitializeScheduler/CreateFiber/RunFibers/WaitSignal/SendSignal/JoinFiber/FinalizeScheduler`) this port wrote is the toolkit's since v0.17.0 (#400).
 - Game data: the runtime cannot decrypt licensed EDATs, so `sc2hd install` (`install.cpp`) decrypts them under their own names
   (`ROOT.EDAT`, `UPDATE.EDAT`) and `EBOOT.BIN` into `EBOOT.elf` when it unpacks the packages.
 
 ## Open toolkit pull requests
 A toolkit pull request this port needs before it is merged is imported as the PR's own diff into `patches/upstream/` (header: PR number, author,
-head commit), applied before `patches/`, and its file is deleted when the pinned revision contains it. There are none at the moment: v0.16.0 merged
-every one this port had imported (#326, #327, #333, #334, #338, #340, #343, #347, #348, #349) and the ones it had sent (#358 the NV3089 source origin,
-#359 cellGame type, #360 MsgDialog buttons, #361 D3D12 vertex program cache, #362 SPU thread image, #363 SPU user-event port). Where one of this
-port's patches overlapped something upstream, upstream's code was kept and the patch reworked on top of it.
+head commit), applied before `patches/`, and its file is deleted when the pinned revision contains it. v0.16.0 merged every one this port had
+imported (#326, #327, #333, #334, #338, #340, #343, #347, #348, #349) and the ones it had sent (#358 the NV3089 source origin, #359 cellGame
+type, #360 MsgDialog buttons, #361 D3D12 vertex program cache, #362 SPU thread image, #363 SPU user-event port); v0.17.0 merged #399
+(saturating log counters), #400 (cellFiber scheduler API) and #402 (MinGW tests, time zone from the system). Where one of this port's patches
+overlapped something upstream, upstream's code was kept and the patch reworked on top of it.
+
+| Import | What |
+|---|---|
+| `01-pr416-prio-start` | a thread created above its creator's priority runs until it blocks (`PS3_PRIO_START=1`, set by the launcher): the SurMixer start-up race, where the opening movie sometimes had no sound; was `patches/0012` |
 
 ## Patches
 | Patch | Area |
 |---|---|
-| `0001-ppu-system-hle` | cellGame / cellMsgDialog / cellSaveData / cellNetCtl fixes, multi-root `PS3_DEV_FLASH` |
-| `0002-spurs-and-spu-runtime` | SPURS workloads, SPU wake-ups, thread images, LS hooks, saturating log counters |
+| `0001-ppu-system-hle` | cellSaveData / cellNetCtl fixes, multi-root `PS3_DEV_FLASH` |
+| `0002-spurs-and-spu-runtime` | SPURS workloads, SPU wake-ups, taskset generations, LS hooks |
 | `0003-audio` | `AUDIO_PEAK` / `AUDIO_WAV`, the Windows mix paced on the block clock |
 | `0004-input` | cellPad keyboard fallbacks (macOS, SDL) and the SDL gamepad thread |
 | `0005-gcm-draw-engine` | display lists, supersampled resolve on the GPU, snapshots, vertex program memo |
 | `0006-vulkan-backend` | Vulkan backend on Windows, batched submission, one wait per present |
 | `0007-metal-backend` | Cmd+Q menu, key events, anisotropic filtering of the old path, resizable window with letterbox |
-| `0008-d3d12-backend` | saturating log counters (the program-keyed vertex program cache is in the toolkit since v0.16.0, #361) |
 | `0009-window-icon` | window icon hook |
-| `0010-portability` | module accessors, optional LGPL ATRAC, MinGW GCC (loader, `__thread`) |
+| `0010-portability` | module accessors, optional LGPL ATRAC, MinGW GCC (loader) |
 | `0011-loading-overlay` | "Loading..." over the black window while the game boots |
-| `0012-thread-priority-start` | a new thread of higher priority than its creator runs until it blocks (SurMixer start-up race: the opening movie sometimes had no sound) |
 | `0013-resizable-window` | Vulkan window: resizable, maximizable, F11 / Alt+Enter fullscreen, letterboxed frame, survives minimize |
 | `0014-metal-fullscreen` | Metal: `PS3RECOMP_FULLSCREEN=1` (`--fullscreen`, read by Vulkan too) starts in fullscreen, Ctrl+Cmd+F toggles it |
 | `0015-escape-pause` | Esc is the keyboard's START (pause menu) instead of closing the window |
 | `0016-unlock-in-memory` | `SC2HD_UNLOCK` (the launcher's `--unlock`): save flags set in memory only |
 | `0017-gpu-resolve-downscale` | a resolve out of a surface held at sample resolution is a GPU downscale (Metal, Vulkan) |
-| `0018-windows-timezone` | `sys_time_get_timezone` through `GetTimeZoneInformation` (no `_get_timezone` in msvcrt.dll) |
 | `0019-shadow-compare-direction` | a depth-texture comparison is `depth FUNC reference`, not `reference FUNC depth` (shadows came out inverted, every backend) |
 
 ## SPURS queues
@@ -104,9 +106,9 @@ Memory: the depth-map snapshot of every frame stayed allocated (3-4 MB a frame, 
 
 Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony MultiStream: an SPU program
 (image 3) plus an MP3 decoder `flashMP3.pic` that it loads from `/dev_flash`. What it took:
-- `patches/0002`: an SPU thread's lifted image is chosen by the content of its image (two images had code at the entry
-  address 0xD0/0xF0 and MultiStream ran the wrong one); an event sent by an SPU through the interrupt mailbox waits a few
-  ms for the PPU's `connect_event` that follows `group_start` (it answered ENOTCONN and ended the SPU program).
+- An SPU thread's lifted image is chosen by the content of its image (two images had code at the entry address 0xD0/0xF0
+  and MultiStream ran the wrong one); an event sent by an SPU through the interrupt mailbox waits a few ms for the PPU's
+  `connect_event` that follows `group_start` (it answered ENOTCONN and ended the SPU program). Both in the toolkit since v0.16.0 (#362, #363).
 - `main.cpp` sets `SPU_CH_BLOCK=1` (a read of an empty mailbox blocks instead of returning 0) and `SPU_INTERP_UNLIFTED=1`.
 - The SPU program returns through a link register into the middle of its own functions, which the lifter had not made
   entries; `launcher/helpers/make_sc2_overlays.py` adds every call's return point. Its two DSP plugins are loaded into local store at 0x33680
@@ -133,12 +135,12 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
   happens when it is entered). `PS3_NET_ONLINE=1` restores the old "connected" answers.
 - `patches/0010`: accessor functions for the thread-local state of the PPU trampoline and the SPU context, so a separate module can reach it (see docs/architecture.md). the LGPL ATRAC3plus decoder is optional (`PS3RECOMP_ATRAC_LGPL`), the host is built without it.
 - `patches/0004`: the SDL gamepad layer runs on one dedicated thread, so a controller plugged in after the start is seen. an SDL keyboard fallback for cellPad on Linux and Windows (the same pad mapping).
-- Windows (MinGW): the PPU loader builds with GCC, `__thread` instead of `__declspec(thread)`, which GCC ignores, so thread-locals were shared globals (all in `patches/0010`); cellAudio never mixes two blocks back to back on WASAPI (`patches/0003`); window icon hook (`patches/0009`).
+- Windows (MinGW): the PPU loader builds with GCC (`patches/0010`; `__thread` instead of `__declspec(thread)`, which GCC ignores, is the toolkit's since v0.16.0); cellAudio never mixes two blocks back to back on WASAPI (`patches/0003`); window icon hook (`patches/0009`).
 - Windows, what kept the game at a frame a second with broken sound after the intro, and what got it running (measured on an
   Intel Core Ultra 7 258V with Arc 140V graphics):
-  - `patches/0008`: the D3D12 backend keyed its vertex program cache on the microcode store from the start slot to the end of
+  - The D3D12 backend keyed its vertex program cache on the microcode store from the start slot to the end of
     everything uploaded, so every upload behind the drawn program missed the cache and ran `D3DCompile` on the FIFO thread.
-    The game's audio engine is fed from the same frame loop, which is where the "6 of every 14 blocks" came from.
+    The game's audio engine is fed from the same frame loop, which is where the "6 of every 14 blocks" came from. Fixed in the toolkit since v0.16.0 (#361).
   - The host is built with clang (`scripts/mingw-w64.cmake`): GCC's emulated TLS was a tenth of the SPU threads' time.
   - `patches/0006`: the Vulkan backend on Windows. The D3D12 backend renders the scene into the 2x supersampled target but has
     no resolve for it (the engine's `patches/0005`), so the picture stayed black; Vulkan runs the same draw engine as Metal.
@@ -175,12 +177,12 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
     animation advances a step per frame, so that is double speed: on a ProMotion Mac (CAMetalLayer at 120 Hz) menus and
     movies ran at 120 frames a second once the frame thread had become fast enough. The vblank clock is 1000/60 ms (it
     was a flat 16 ms, i.e. 62.5 Hz and everything 4% fast).
-  - Only `patches/0008` (D3D12), the Windows build of the Vulkan backend in `0006`, and the WASAPI mix thread in `0003` are
+  - Only the Windows build of the Vulkan backend in `0006`, and the WASAPI mix thread in `0003` are
     Windows-only (the 1 ms frame-loop sleep is not). The rest of `0005` and `0006` change the Vulkan backend, the draw engine and NV3089, which Linux
     shares (macOS shares the draw engine and NV3089), and the vblank cap applies everywhere. On Linux they fixed
     the same magenta picture after the intro: the first commit, run in WSLg on llvmpipe, showed only magenta in the attract
     demos at 0-8 frames a second; with the patches the demos draw correctly at about 10 (still the CPU rasteriser).
-- `patches/0002` and the other area patches: the `if (_n++ < N)` log caps used signed counters that wrapped negative after 2^31 calls and then printed on every call (millions of `[spu] drain-resume` lines in battle); they now saturate.
+- The `if (_n++ < N)` log caps used signed counters that wrapped negative after 2^31 calls and then printed on every call (millions of `[spu] drain-resume` lines in battle); they saturate in the toolkit since v0.17.0 (#399).
 - MP3 without firmware: MultiStream loads Sony's decoder `flashMP3.pic` into local store and calls one function of it per
   frame. `src/mp3_hle.c` answers that call on the host (decoder core: `src/third_party/dr_mp3_core.h`, dr_mp3/minimp3,
   public domain), through `patches/0002` (`spu_register_ls_hook`: host code in place of runtime-loaded SPU code at an LS

@@ -24,7 +24,7 @@ BUILD="$ROOT/build"
 TOOLKIT="$BUILD/ps3recomp"
 DEPS="$BUILD/deps"
 PREFIX="$DEPS/prefix"
-TOOLKIT_REV="749182eebb936f086a007f63e1c7d853f3cf708a"   # v0.16.0
+TOOLKIT_REV="a6d76c895f77eb30b90a806c830544e61821b77f"   # v0.17.0
 
 # Pinned dependency sources (all permissive: zlib, BSD-3-Clause / Apache-2.0).
 SDL_TAG="release-2.32.10"

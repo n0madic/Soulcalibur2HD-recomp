@@ -17,7 +17,7 @@ Resizable window: the Vulkan backend's window can be resized, maximized and made
 ---
 
 diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
-index d029310e..f8885116 100644
+index 45d9ea00..3ca32f41 100644
 --- a/libs/video/rsx_vulkan_backend.c
 +++ b/libs/video/rsx_vulkan_backend.c
 @@ -1803,8 +1803,11 @@ static void vk_window_open(const char* title)
@@ -170,7 +170,7 @@ index d029310e..f8885116 100644
      b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
      b.dstAccessMask = 0;
      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-@@ -3958,6 +4014,19 @@ int rsx_vulkan_backend_pump_messages(void)
+@@ -3968,6 +4024,19 @@ int rsx_vulkan_backend_pump_messages(void)
      while (SDL_PollEvent(&e)) {
          if (e.type == SDL_QUIT) quit = 1;
          else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) quit = 1;

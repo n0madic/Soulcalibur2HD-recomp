@@ -3,12 +3,11 @@ cellPad: keyboard fallbacks and the SDL gamepad thread.
 - macOS keyboard fallback (arrows, Z=CROSS, X=CIRCLE, A, S, Q, W, 1, 2, Return=START, Tab=SELECT), and the same
   mapping with SDL (SDL_GetKeyboardState, while the window has the focus) on Linux and Windows.
 - The SDL gamepad layer runs on one dedicated thread, so a controller plugged in after the start is seen.
-- Saturating log counters in cellPad.
 
 ---
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 04ab80c0..ba0c65ef 100644
+index bdd2f85a..9e468f33 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -169,6 +169,7 @@ if(APPLE)
@@ -20,18 +19,10 @@ index 04ab80c0..ba0c65ef 100644
      set_source_files_properties(
          "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_metal_backend.m"
 diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
-index 85b05f82..b217c4e5 100644
+index 7fa8cab9..e5e467d4 100644
 --- a/libs/input/cellPad.c
 +++ b/libs/input/cellPad.c
-@@ -11,6 +11,7 @@
-  */
- 
- #include <time.h>
-+#include "ps3emu/log_first.h"
- #include "cellPad.h"
- #include <stdio.h>
- #include <stdlib.h>
-@@ -88,6 +89,21 @@ typedef struct {
+@@ -89,6 +89,21 @@ typedef struct {
      u8   press_r1;
  } PadHostState;
  
@@ -53,7 +44,7 @@ index 85b05f82..b217c4e5 100644
  static int           s_pad_initialized = 0;
  static u32           s_max_connect = 0;
  static u32           s_port_setting[CELL_PAD_MAX_PORT_NUM];
-@@ -97,7 +113,14 @@ static int s_data_fresh[PAD_MAX_HOST_PORTS];
+@@ -98,7 +113,14 @@ static int s_data_fresh[PAD_MAX_HOST_PORTS];
  
  #if PAD_BACKEND_SDL2
  static SDL_GameController* s_sdl_controllers[PAD_MAX_HOST_PORTS];
@@ -69,7 +60,7 @@ index 85b05f82..b217c4e5 100644
  #endif
  
  /* ---------------------------------------------------------------------------
-@@ -132,33 +155,6 @@ static void pad_rumble_levels(u8 small_on, u8 large, u16* lo, u16* hi)
+@@ -133,33 +155,6 @@ static void pad_rumble_levels(u8 small_on, u8 large, u16* lo, u16* hi)
      *hi = small_on ? 0xFFFFu : 0u;
  }
  
@@ -103,7 +94,7 @@ index 85b05f82..b217c4e5 100644
  /* Keyboard fallback for port 0.
   *
   * The only backend here is XInput, so on a machine with no controller plugged
-@@ -184,7 +180,86 @@ static int pad_host_window_focused(void)
+@@ -185,7 +180,86 @@ static int pad_host_window_focused(void)
      GetWindowThreadProcessId(fg, &pid);
      return pid == GetCurrentProcessId();
  }
@@ -190,7 +181,7 @@ index 85b05f82..b217c4e5 100644
  static void pad_poll_keyboard(void)
  {
      static int off = -1;
-@@ -192,6 +267,7 @@ static void pad_poll_keyboard(void)
+@@ -193,6 +267,7 @@ static void pad_poll_keyboard(void)
      if (off) return;
  
      PadHostState* hs = &s_host_state[0];
@@ -198,7 +189,7 @@ index 85b05f82..b217c4e5 100644
      if (!pad_host_window_focused()) {
          /* Release everything on focus loss, or a key held while alt-tabbing
           * would stay down forever. */
-@@ -203,18 +279,18 @@ static void pad_poll_keyboard(void)
+@@ -204,18 +279,18 @@ static void pad_poll_keyboard(void)
      }
  
      static const struct { int vk; u16 btn; } map[] = {
@@ -225,7 +216,7 @@ index 85b05f82..b217c4e5 100644
  
      hs->buttons   = btns;
      hs->connected = 1;
-@@ -233,6 +309,34 @@ static void pad_poll_keyboard(void)
+@@ -234,6 +309,34 @@ static void pad_poll_keyboard(void)
  }
  #endif
  
@@ -260,7 +251,7 @@ index 85b05f82..b217c4e5 100644
  static void pad_poll_xinput(void)
  {
      for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
-@@ -283,16 +387,7 @@ static void pad_poll_xinput(void)
+@@ -284,16 +387,7 @@ static void pad_poll_xinput(void)
          s_host_state[i].trigger_r2 = gp->bRightTrigger;
  
          /* Pressure-sensitive buttons: XInput has digital only, so 0 or 255 */
@@ -278,7 +269,7 @@ index 85b05f82..b217c4e5 100644
      }
  }
  
-@@ -332,7 +427,7 @@ static u8 pad_sdl_trigger_to_u8(int raw)
+@@ -333,7 +427,7 @@ static u8 pad_sdl_trigger_to_u8(int raw)
      return (u8)val;
  }
  
@@ -287,7 +278,7 @@ index 85b05f82..b217c4e5 100644
  static void pad_sdl_rumble_send(int i)
  {
      SDL_GameController* gc = s_sdl_controllers[i];
-@@ -343,10 +438,12 @@ static void pad_sdl_rumble_send(int i)
+@@ -344,10 +438,12 @@ static void pad_sdl_rumble_send(int i)
      r->sent_ms = on ? pad_now_ms() : 0;
  }
  
@@ -301,7 +292,7 @@ index 85b05f82..b217c4e5 100644
      for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
          if (!s_sdl_controllers[i]) {
              /* Try to open newly connected controllers */
-@@ -357,7 +454,7 @@ static void pad_poll_sdl2(void)
+@@ -358,7 +454,7 @@ static void pad_poll_sdl2(void)
  
          SDL_GameController* gc = s_sdl_controllers[i];
          if (!gc || !SDL_GameControllerGetAttached(gc)) {
@@ -310,7 +301,7 @@ index 85b05f82..b217c4e5 100644
              if (gc) {
                  SDL_GameControllerClose(gc);
                  s_sdl_controllers[i] = NULL;
-@@ -366,7 +463,7 @@ static void pad_poll_sdl2(void)
+@@ -367,7 +463,7 @@ static void pad_poll_sdl2(void)
              continue;
          }
  
@@ -319,7 +310,7 @@ index 85b05f82..b217c4e5 100644
  
          /* Keep a rumble the title set going (see PAD_RUMBLE_HOLD_MS). */
          if (s_rumble[i].sent_ms && pad_now_ms() - s_rumble[i].sent_ms >= PAD_RUMBLE_RENEW_MS)
-@@ -394,53 +491,51 @@ static void pad_poll_sdl2(void)
+@@ -395,53 +491,51 @@ static void pad_poll_sdl2(void)
          if (lt > 3000) btns |= CELL_PAD_CTRL_L2;
          if (rt > 3000) btns |= CELL_PAD_CTRL_R2;
  
@@ -405,7 +396,7 @@ index 85b05f82..b217c4e5 100644
      for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
          if (s_sdl_controllers[i]) {
              SDL_GameControllerRumble(s_sdl_controllers[i], 0, 0, 0);
-@@ -448,6 +543,49 @@ static void pad_shutdown_backend(void)
+@@ -449,6 +543,49 @@ static void pad_shutdown_backend(void)
              s_sdl_controllers[i] = NULL;
          }
      }
@@ -455,7 +446,7 @@ index 85b05f82..b217c4e5 100644
      memset(s_rumble, 0, sizeof s_rumble);
  }
  
-@@ -502,7 +640,7 @@ static void pad_poll_backend(void)
+@@ -503,7 +640,7 @@ static void pad_poll_backend(void)
  #elif PAD_BACKEND_SDL2
      pad_poll_sdl2();
  #endif
@@ -464,16 +455,7 @@ index 85b05f82..b217c4e5 100644
      if (!s_host_state[0].connected) pad_poll_keyboard();
  #endif
  }
-@@ -1049,7 +1187,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
-           vm_write32((unsigned long long)ea + _o, *(u32*)((char*)info + _o)); }
- 
-     { static int _n = 0;
--      if (_n++ < 2)
-+      if (PS3_LOG_FIRST(_n, 2))
-           printf("[cellPad] PeriphGetInfo(max=%u now=%u) -> STANDARD class\n",
-                  info->max_connect, connected); }
-     return CELL_OK;
-@@ -1141,6 +1279,9 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
+@@ -1142,6 +1279,9 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
      u16 lo, hi;
      pad_rumble_levels(param->motor[CELL_PAD_ACTUATOR_PARAM_SMALL],
                        param->motor[CELL_PAD_ACTUATOR_PARAM_LARGE], &lo, &hi);
@@ -483,7 +465,7 @@ index 85b05f82..b217c4e5 100644
      s_rumble[port_no].lo = lo;
      s_rumble[port_no].hi = hi;
  
-@@ -1156,6 +1297,7 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
+@@ -1157,6 +1297,7 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
  
  #if PAD_BACKEND_SDL2
      pad_sdl_rumble_send((int)port_no);

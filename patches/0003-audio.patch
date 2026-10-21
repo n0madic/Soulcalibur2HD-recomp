@@ -1,7 +1,6 @@
 cellAudio: diagnostics, and a mix paced on the block clock on Windows.
 
 - AUDIO_PEAK=1 and AUDIO_WAV=<file> (a WAV dump of the mix).
-- Saturating log counters in cellAudio and cellAdec.
 - The mixer's two pacing clocks (the device's and the no-device one on the performance counter) are one: with no
   device the same block clock runs, waited on the same way.
 - Windows: the mix is paced on an ideal 5.33 ms block clock, waited on with a high-resolution waitable timer, so the
@@ -13,18 +12,10 @@ cellAudio: diagnostics, and a mix paced on the block clock on Windows.
 ---
 
 diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
-index 9e3a2d96..54564acf 100644
+index 6f76df8a..0b509a76 100644
 --- a/libs/audio/cellAudio.c
 +++ b/libs/audio/cellAudio.c
-@@ -13,6 +13,7 @@
-  */
- 
- #include "../../runtime/memory/vm.h"   /* vm_commit */
-+#include "ps3emu/log_first.h"
- #include "cellAudio.h"
- #include "../../runtime/ppu/ppu_memory.h"   /* vm_base, vm_read64, vm_write32 */
- #include <stdio.h>
-@@ -188,6 +189,7 @@ static int audio_backend_init(void)
+@@ -189,6 +189,7 @@ static int audio_backend_init(void)
      }
  
      SDL_PauseAudioDevice(s_sdl_audio_dev, 0); /* Start playback */
@@ -32,16 +23,7 @@ index 9e3a2d96..54564acf 100644
      return 0;
  }
  
-@@ -380,7 +382,7 @@ static int audio_backend_room(void)
-     if (FAILED(hr)) {
-         /* Device gone (AUDCLNT_E_DEVICE_INVALIDATED on a default-device
-          * change, sleep, ...): pace on the clock rather than spin. */
--        static int _n = 0; if (_n++ < 4)
-+        static int _n = 0; if (PS3_LOG_FIRST(_n, 4))
-             fprintf(stderr, "[cellAudio] GetCurrentPadding failed 0x%08lX -- clock pacing%c", (unsigned long)hr, 10);
-         return -1;
-     }
-@@ -541,6 +543,26 @@ static void audio_notify_event_queues(void)
+@@ -553,6 +554,26 @@ static void audio_notify_event_queues(void)
      }
  }
  
@@ -68,7 +50,7 @@ index 9e3a2d96..54564acf 100644
  #ifdef _WIN32
  static unsigned __stdcall audio_mix_thread_func(void* arg)
  {
-@@ -552,39 +574,55 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+@@ -564,39 +585,55 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
       * WASAPI buffer can never reach, so it mixed ~225 blocks/s and the device
       * dropped the surplus: 20% of the audio thrown away, and a guest mixer
       * (GH3's FMOD) that could not keep ahead of the read index played gaps.
@@ -147,7 +129,7 @@ index 9e3a2d96..54564acf 100644
          audio_backend_submit(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES);
          /* AUDIO_RATE=1: blocks mixed vs real time, and frames dropped. */
          { static int on = -1; if (on < 0) on = getenv("AUDIO_RATE") ? 1 : 0;
-@@ -606,6 +644,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+@@ -618,6 +655,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
          audio_notify_event_queues();
      }
  
@@ -155,7 +137,7 @@ index 9e3a2d96..54564acf 100644
      printf("[cellAudio] Mixing thread stopped\n");
      return 0;
  }
-@@ -615,10 +654,18 @@ static void* audio_mix_thread_func(void* arg)
+@@ -627,10 +665,18 @@ static void* audio_mix_thread_func(void* arg)
      (void)arg;
      printf("[cellAudio] Mixing thread started\n");
  
@@ -174,51 +156,3 @@ index 9e3a2d96..54564acf 100644
  
          u32 queued = audio_backend_queued_samples();
          if (queued > CELL_AUDIO_BLOCK_SAMPLES * 4) {
-@@ -1081,7 +1128,7 @@ s32 cellAudioGetPortConfig(u32 portNum, CellAudioPortConfig* config)
-     vm_write32(cfg + 24, port->buf_size);                                   /* portSize */
-     vm_write32(cfg + 28, (u32)port->port_addr);                             /* portAddr */
- 
--    { static int _n = 0; if (_n++ < 24)
-+    { static int _n = 0; if (PS3_LOG_FIRST(_n, 24))
-         fprintf(stderr, "[cellAudio] GetPortConfig(port=%u) status=%s bufEA=0x%08X ridxEA=0x%08X\n",
-                 portNum, port->running ? "RUN" : "READY",
-                 (u32)port->port_addr, (u32)port->read_idx_addr); }
-diff --git a/libs/codec/cellAdec.c b/libs/codec/cellAdec.c
-index 3da70179..2fd35826 100644
---- a/libs/codec/cellAdec.c
-+++ b/libs/codec/cellAdec.c
-@@ -7,6 +7,7 @@
-  */
- 
- #include "cellAdec.h"
-+#include "ps3emu/log_first.h"
- #include <stdio.h>
- #include <stdlib.h>   /* getenv -- an implicit decl returns int, truncating the pointer */
- #include <string.h>
-@@ -97,7 +98,7 @@ static void adec_notify(CellAdecHandle handle, u32 msg_type, s32 msg_data)
-     if (handle >= MAX_ADEC || !s_adec[handle].in_use) return;
-     const AdecSlot* a = &s_adec[handle];
-     { static int _n = 0;
--      if (_n++ < 4)
-+      if (PS3_LOG_FIRST(_n, 4))
-           printf("[cellAdec] notify h=%u msg=%u data=0x%X cb=0x%08X arg=0x%08X caller=%d\n",
-                  handle, msg_type, (unsigned)msg_data, a->cbFunc, a->cbArg,
-                  g_ps3_guest_caller ? 1 : 0); }
-@@ -285,7 +286,7 @@ s32 cellAdecDecodeAu(CellAdecHandle handle, const CellAdecAuInfo* auInfo)
- 
- s32 cellAdecGetPcm(CellAdecHandle handle, void* outBuffer)
- {
--    { static int _n = 0; if (_n++ < 6)
-+    { static int _n = 0; if (PS3_LOG_FIRST(_n, 6))
-         printf("[cellAdec] GetPcm(handle=%u out=0x%08X)\n",
-                handle, GUEST_EA(outBuffer)); }
-     if (handle >= MAX_ADEC || !s_adec[handle].in_use)
-@@ -305,7 +306,7 @@ s32 cellAdecGetPcm(CellAdecHandle handle, void* outBuffer)
- 
- s32 cellAdecGetPcmItem(CellAdecHandle handle, const CellAdecPcmItem** pcmItem)
- {
--    { static int _n = 0; if (_n++ < 6)
-+    { static int _n = 0; if (PS3_LOG_FIRST(_n, 6))
-         printf("[cellAdec] GetPcmItem(handle=%u out=0x%08X hasPcm=%d)\n",
-                handle, GUEST_EA(pcmItem),
-                handle < MAX_ADEC ? s_adec[handle].hasPcm : -1); }

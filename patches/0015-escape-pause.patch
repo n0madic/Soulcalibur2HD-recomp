@@ -7,7 +7,7 @@ Esc pauses: on the keyboard Esc is START (the game's pause menu), not quit.
 ---
 
 diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
-index b217c4e5..d94791cb 100644
+index e5e467d4..0b74c70b 100644
 --- a/libs/input/cellPad.c
 +++ b/libs/input/cellPad.c
 @@ -195,6 +195,7 @@ static int pad_key_down(int key) { return (GetAsyncKeyState(key) & 0x8000) != 0;
@@ -43,10 +43,10 @@ index b217c4e5..d94791cb 100644
  
      u16 btns = 0;
 diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
-index 9589348c..f89fb1fc 100644
+index 2c517d4e..718cc644 100644
 --- a/libs/video/rsx_d3d12_backend.c
 +++ b/libs/video/rsx_d3d12_backend.c
-@@ -503,11 +503,7 @@ static LRESULT CALLBACK d3d12_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+@@ -508,11 +508,7 @@ static LRESULT CALLBACK d3d12_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
          PostQuitMessage(0);
          return 0;
      case WM_KEYDOWN:
@@ -77,10 +77,10 @@ index 355cf096..c57f009a 100644
  
      return DefWindowProcA(hwnd, msg, wp, lp);
 diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
-index f8885116..da43ce18 100644
+index 3ca32f41..5fe564b6 100644
 --- a/libs/video/rsx_vulkan_backend.c
 +++ b/libs/video/rsx_vulkan_backend.c
-@@ -4013,7 +4013,6 @@ int rsx_vulkan_backend_pump_messages(void)
+@@ -4023,7 +4023,6 @@ int rsx_vulkan_backend_pump_messages(void)
      SDL_Event e;
      while (SDL_PollEvent(&e)) {
          if (e.type == SDL_QUIT) quit = 1;

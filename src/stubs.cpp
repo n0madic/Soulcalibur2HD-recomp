@@ -33,7 +33,7 @@ extern "C" void sc2hd_hle_register(void);   /* sc2hd_hle.cpp */
 
 extern "C" void ps3_load_prx_modules(void)
 {
-    /* Not a PRX: the title-specific HLE (cellFiber scheduler, ...) is registered
+    /* Not a PRX: the title-specific HLE (cellSail, the LFQueue, fonts, ...) is registered
      * here because this runs before ppu_hle_init(). */
     sc2hd_hle_register();
 }

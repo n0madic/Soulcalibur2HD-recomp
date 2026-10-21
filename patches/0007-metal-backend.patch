@@ -3,8 +3,8 @@ Metal backend: menu, key events, anti-aliasing and window handling.
 - A main menu with Cmd+Q ("Quit <title>"); closing the window or Cmd+Q ends the process.
 - The window drops key down/up events (the pad polls the keyboard itself), so a keypress no longer plays the
   system alert sound; Cmd shortcuts still reach the menu.
-- FXAA 3.11 in the display pass (PS3RECOMP_METAL_FXAA=0|1, default 1) and anisotropic filtering of linearly
-  filtered textures (PS3RECOMP_METAL_AF=1..16, default 16); PS3RECOMP_METAL_HEADLESS=1 with
+- Anisotropic filtering of linearly filtered textures on the old live-draw path (PS3RECOMP_METAL_AF=1..16, default
+  16); the draw engine uses the toolkit's own PS3_AA / PS3_SHARPEN / PS3_ANISO. PS3RECOMP_METAL_HEADLESS=1 with
   PS3RECOMP_METAL_PRESENT_DUMP=<dir> writes every 120th presented frame.
 - The window is resizable without stretching: the drawable follows the window in device pixels and the display
   pass fits the 16:9 picture into it, black elsewhere. PS3RECOMP_METAL_WINDOW=WxH sets the initial size.
@@ -12,10 +12,10 @@ Metal backend: menu, key events, anti-aliasing and window handling.
 ---
 
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index 32f0b958..d7088392 100644
+index 5b20d8ac..66417b90 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
-@@ -82,6 +82,15 @@
+@@ -83,6 +83,15 @@
  #if !TARGET_OS_IPHONE
  static id                  s_window_close_observer;
  #endif
@@ -31,7 +31,7 @@ index 32f0b958..d7088392 100644
  static int                 s_ready;
  static u32                 s_width  = 1280;
  static u32                 s_height = 720;
-@@ -579,12 +588,42 @@ static void window_close_observer_start(NSWindow* window)
+@@ -580,12 +589,42 @@ static void window_close_observer_start(NSWindow* window)
          }];
  }
  
@@ -74,7 +74,7 @@ index 32f0b958..d7088392 100644
      s_window = [[NSWindow alloc]
          initWithContentRect:frame
                    styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-@@ -643,6 +682,7 @@ static int create_placeholders(void)
+@@ -644,6 +683,7 @@ static int create_placeholders(void)
      sd.magFilter = MTLSamplerMinMagFilterLinear;
      sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
      sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
@@ -82,7 +82,7 @@ index 32f0b958..d7088392 100644
      s_default_sampler = [s_dev newSamplerStateWithDescriptor:sd];
      if (!s_default_sampler) return -1;
  
-@@ -1299,6 +1339,8 @@ static int samp_slot_for(const rsx_texture_state* t)
+@@ -1300,6 +1340,8 @@ static int samp_slot_for(const rsx_texture_state* t)
      if (max_lod < min_lod) max_lod = min_lod;
      sd.lodMinClamp = min_lod;
      sd.lodMaxClamp = max_lod;
@@ -91,7 +91,7 @@ index 32f0b958..d7088392 100644
      sd.sAddressMode = gcm_wrap_to_metal(t->address);
      sd.tAddressMode = gcm_wrap_to_metal(t->address >> 8);
      sd.rAddressMode = gcm_wrap_to_metal(t->address >> 16);
-@@ -2537,6 +2579,7 @@ static MTLPixelFormat eng_pixel_format(rsx_be_format f)
+@@ -2538,6 +2580,7 @@ static MTLPixelFormat eng_pixel_format(rsx_be_format f)
  /* ---- staging ------------------------------------------------------------- */
  
  static void eng_encode_and_commit(id<MTLTexture> present_dst);
@@ -99,7 +99,7 @@ index 32f0b958..d7088392 100644
  
  static int eng_stage_reserve(u32 bytes, u32* out_off)
  {
-@@ -3541,7 +3584,8 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3542,7 +3585,8 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
   *
   * With PS3_AA=fxaa the surface goes through FXAA first, at its own size; with
   * PS3_SHARPEN this pass sharpens it as it samples. Either one that is off or
@@ -109,7 +109,7 @@ index 32f0b958..d7088392 100644
  static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
                                  id<MTLTexture> dst)
  {
-@@ -3564,13 +3608,20 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+@@ -3565,13 +3609,20 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
      }
      MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
      rp.colorAttachments[0].texture     = dst;
@@ -132,7 +132,7 @@ index 32f0b958..d7088392 100644
      /* The video out's gamma (cellVideoOutSetGamma, the title's brightness
       * setting): out = in^gamma, as RPCS3's calibration pass applies it. The
       * sharpening taps are one source texel apart. */
-@@ -3608,6 +3659,14 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3609,6 +3660,14 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
              if (s_headless) {
                  dst = s_offscreen;
              } else {
@@ -147,7 +147,7 @@ index 32f0b958..d7088392 100644
                  drawable = [s_layer nextDrawable];
                  if (!drawable) {           /* compositor is busy; skip */
                      dispatch_semaphore_signal(s_inflight);
-@@ -3665,6 +3724,7 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3666,6 +3725,7 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
                      fprintf(stderr, "[rsx engine/metal] command buffer failed: %s (code %ld)\n",
                              [[[cb error] localizedDescription] UTF8String], (long)[[cb error] code]);
              }
@@ -155,7 +155,7 @@ index 32f0b958..d7088392 100644
          }
  
          if (s_eng_dropped) {
-@@ -3678,14 +3738,10 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3679,14 +3739,10 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
      }
  }
  
@@ -173,7 +173,7 @@ index 32f0b958..d7088392 100644
      if ([src pixelFormat] != MTLPixelFormatRGBA8Unorm &&
          [src pixelFormat] != MTLPixelFormatBGRA8Unorm) return;
      size_t w = [src width], h = [src height];
-@@ -3709,11 +3765,39 @@ static void eng_dump_frame(id<MTLTexture> src)
+@@ -3710,11 +3766,39 @@ static void eng_dump_frame(id<MTLTexture> src)
              fwrite(rgb, 1, 3, f);
          }
          fclose(f);
@@ -214,7 +214,7 @@ index 32f0b958..d7088392 100644
  static void eng_present(void* user, u32 surface)
  {
      (void)user;
-@@ -3838,6 +3922,13 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
+@@ -3839,6 +3923,13 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
          const char* hl = getenv("PS3RECOMP_METAL_HEADLESS");
          s_headless = (hl && *hl && *hl != '0');
  
@@ -228,7 +228,7 @@ index 32f0b958..d7088392 100644
          s_dev = MTLCreateSystemDefaultDevice();
          if (!s_dev) {
              fprintf(stderr, "[RSX metal] no Metal device available\n");
-@@ -3982,8 +4073,21 @@ static int pump_messages_impl(void)
+@@ -3983,8 +4074,21 @@ static int pump_messages_impl(void)
                                                  inMode:NSDefaultRunLoopMode
                                                 dequeue:YES];
              if (!ev) break;

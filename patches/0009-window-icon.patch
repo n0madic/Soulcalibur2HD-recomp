@@ -8,10 +8,10 @@ Dock icon of a bare executable. Without the resource or the hook nothing changes
 ---
 
 diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
-index a9f9489d..9589348c 100644
+index 0ecca8eb..2c517d4e 100644
 --- a/libs/video/rsx_d3d12_backend.c
 +++ b/libs/video/rsx_d3d12_backend.c
-@@ -520,6 +520,8 @@ static HWND create_window(u32 width, u32 height, const char* title)
+@@ -525,6 +525,8 @@ static HWND create_window(u32 width, u32 height, const char* title)
      wc.lpfnWndProc = d3d12_wndproc;
      wc.hInstance = GetModuleHandle(NULL);
      wc.hCursor = LoadCursor(NULL, IDC_ARROW);
@@ -21,10 +21,10 @@ index a9f9489d..9589348c 100644
      RegisterClassExA(&wc);
  
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index d7088392..2cafe247 100644
+index 66417b90..9ffcf07d 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
-@@ -598,10 +598,14 @@ - (void)quit:(id)sender { (void)sender; atomic_store(&s_closed, 1); }
+@@ -599,10 +599,14 @@ - (void)quit:(id)sender { (void)sender; atomic_store(&s_closed, 1); }
  @end
  static RsxQuitTarget* s_quit_target;
  

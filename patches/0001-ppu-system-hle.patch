@@ -1,7 +1,5 @@
 PPU runtime and system-library HLE fixes Soulcalibur II HD needs.
 
-- cellGameBootCheck reports an HDD game (type 2) for CATEGORY=HG; the game aborts on any other type.
-- CELL_MSGDIALOG_BUTTON_NONE is -1 (and INVALID 0), as on the console and in RPCS3.
 - cellSaveData: first boot has no save. AutoLoad can report that as ERROR_NODATA or ERROR_CBRESULT
   (PS3_SAVEDATA_NODATA_OK=0|2, what the hardware returns when the stat callback answers ERR_NODATA) instead of
   CELL_OK with an all-zero buffer the game decoded as its options (picture at a tenth of its brightness). The saves
@@ -9,54 +7,12 @@ PPU runtime and system-library HLE fixes Soulcalibur II HD needs.
 - PS3_DEV_FLASH may list several roots (':' on POSIX, ';' on Windows); the first one that holds the file wins.
   One resolver, ps3_dev_flash_path (sys_fs.c), serves both halves of the split filesystem, cellFs (ppu_fs) and the raw
   sys_fs syscalls; sys_fs used to take the whole list as a single directory.
-- PS3_LOG_FIRST (include/ps3emu/log_first.h) is the saturating counter for the "first n times" log lines.
 - cellNetCtl: offline, NetStartDialog ends with CELL_NET_CTL_ERROR_DIALOG_CANCELED instead of "connected", so the
   game shows its own "sign in to PlayStation Network" message and the menu stays usable. PS3_NET_ONLINE=1 restores
   the old answers.
-- Log counters in cellFs, ppu_hle and ppu_loader use it (as do the other patches).
 
 ---
 
-diff --git a/include/ps3emu/log_first.h b/include/ps3emu/log_first.h
-new file mode 100644
-index 00000000..73cba23e
---- /dev/null
-+++ b/include/ps3emu/log_first.h
-@@ -0,0 +1,13 @@
-+/*
-+ * ps3recomp - log a diagnostic only the first few times
-+ */
-+#ifndef PS3RECOMP_LOG_FIRST_H
-+#define PS3RECOMP_LOG_FIRST_H
-+
-+/* True for the first `limit` evaluations of the counter `ctr` (a static variable of the call site), then false:
-+ *     static int _n = 0; if (PS3_LOG_FIRST(_n, 8)) fprintf(stderr, ...);
-+ * The counter stops at the limit instead of counting on, so a hot path cannot wrap it past 2^31 and start
-+ * printing on every call again. */
-+#define PS3_LOG_FIRST(ctr, limit) ((ctr) < (limit) && ++(ctr))
-+
-+#endif /* PS3RECOMP_LOG_FIRST_H */
-diff --git a/libs/filesystem/cellFs.c b/libs/filesystem/cellFs.c
-index 942ea515..9cbf2237 100644
---- a/libs/filesystem/cellFs.c
-+++ b/libs/filesystem/cellFs.c
-@@ -6,6 +6,7 @@
-  */
- 
- #include "cellFs.h"
-+#include "ps3emu/log_first.h"
- #include "../../runtime/platform/win32_backtrace.h"   /* RtlCaptureStackBackTrace / GetModuleHandleA on POSIX */
- #include "ps3emu/endian.h"
- #include <stdio.h>
-@@ -530,7 +531,7 @@ s32 cellFsRead(CellFsFd fd, void* buf, u64 nbytes, u64* nread)
-     }
- 
-     { static int _n = 0;
--      if (_n++ < 32)
-+      if (PS3_LOG_FIRST(_n, 32))
-           { printf("[cellFs] Read(fd=%d, buf=0x%08X, %llu bytes) -> %llu", fd,
-                    (uint32_t)(uintptr_t)buf,
-                    (unsigned long long)nbytes, (unsigned long long)bytes_read);
 diff --git a/libs/network/cellNetCtl.c b/libs/network/cellNetCtl.c
 index c7926c0c..dd1a104a 100644
 --- a/libs/network/cellNetCtl.c
@@ -322,10 +278,10 @@ index 286bf478..bb6b18ea 100644
  
  s32 cellSaveDataDelete(u32 version, const char* dirName,
 diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
-index 44cd4ee8..824d17c7 100644
+index 4d54b72b..941f977f 100644
 --- a/runtime/ppu/ppu_fs.cpp
 +++ b/runtime/ppu/ppu_fs.cpp
-@@ -124,6 +124,7 @@ static void guest_strcpy(char* dst, uint32_t gaddr, size_t cap)
+@@ -125,6 +125,7 @@ static void guest_strcpy(char* dst, uint32_t gaddr, size_t cap)
  /* Defined in runtime/syscalls/sys_fs.c -- shared by all three path
   * translators. (extern "C" is ill-formed at block scope.) */
  extern "C" void ps3_vfs_ps3game_fallback(char* path, size_t cap);
@@ -333,7 +289,7 @@ index 44cd4ee8..824d17c7 100644
  
  /* Translate a guest path to a host path under ppu_vfs_root. Known PS3 mount
   * prefixes are stripped; the rest is appended to the root. */
-@@ -165,7 +166,7 @@ static void host_path(char* out, size_t cap, const char* guest)
+@@ -166,7 +167,7 @@ static void host_path(char* out, size_t cap, const char* guest)
      if (strncmp(guest, "/dev_flash/", 11) == 0) {
          const char* fw = getenv("PS3_DEV_FLASH");
          if (!fw || !*fw) fw = "D:/recomp/tools/rpcs3/dev_flash";
@@ -342,75 +298,6 @@ index 44cd4ee8..824d17c7 100644
          for (char* p = out; *p; p++) if (*p == '\\') *p = '/';
          return;
      }
-diff --git a/runtime/ppu/ppu_hle.cpp b/runtime/ppu/ppu_hle.cpp
-index d9ce0c36..309299f3 100644
---- a/runtime/ppu/ppu_hle.cpp
-+++ b/runtime/ppu/ppu_hle.cpp
-@@ -18,6 +18,7 @@
-  */
- #define PPU_NO_INLINE_LOADS   /* declares its own out-of-line vm_read* below */
- #include "ppu_recomp.h"   /* ppu_context */
-+#include "ps3emu/log_first.h"
- #include "ps3emu/nid.h"   /* ps3_nid_table, ps3_nid_entry */
- #include "ps3emu/milestone.h" /* ps3_msf -- boot milestone log */
- #include <stdlib.h>       /* getenv */
-@@ -277,7 +278,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
-                       s_ha = e ? (long)strtoul(e, 0, 16) : 0; }
-       if (s_ha && nid == (uint32_t)s_ha) {
-         static int _n = 0;
--        if (_n++ < 6)
-+        if (PS3_LOG_FIRST(_n, 6))
-           fprintf(stderr, "[hle-args] nid=0x%08X r3=0x%08X r4=0x%08X r5=0x%08X r6=0x%08X "
-                           "r7=0x%08X r8=0x%08X r9=0x%08X r10=0x%08X lr=0x%08X\n",
-                   nid, (uint32_t)ctx->gpr[3], (uint32_t)ctx->gpr[4], (uint32_t)ctx->gpr[5],
-@@ -369,7 +370,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
-                             }
-                         }
-                         static int _n = 0;
--                        if (_n++ < 8)
-+                        if (PS3_LOG_FIRST(_n, 8))
-                             fprintf(stderr, "[FORCE-HLE] nid=0x%08X: bypassing libsre, using HLE\n", nid);
-                         opd = 0;   /* fall through to the HLE handler below */
-                         break;
-diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index 148be1ff..d8438f89 100644
---- a/runtime/ppu/ppu_loader.cpp
-+++ b/runtime/ppu/ppu_loader.cpp
-@@ -21,6 +21,7 @@
- /* Hoisted: code below was added above the original include block, so these
-  * have to be visible from here rather than 160 lines further down. */
- #include <stdint.h>
-+#include "ps3emu/log_first.h"
- #include <stdio.h>
- #include <stdlib.h>
- #include <string.h>
-@@ -1800,7 +1801,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
-       if (s_wv && v == s_wv && a >= s_wvlo && a < s_wvhi &&
-           (!s_wvg || GetFileAttributesA(s_wvg) != INVALID_FILE_ATTRIBUTES)) {
-           static int _n = 0;
--          if (_n++ < 24) {
-+          if (PS3_LOG_FIRST(_n, 24)) {
-               fprintf(stderr, "[wv] 0x%08X <- 0x%X (w%d) guest-fn=0x%08X\n",
-                       a, v, width, ppu_prof_resolve_host(ra));
-               extern PPU_THREAD_LOCAL ppu_context* g_active_ctx;
-@@ -1887,7 +1888,7 @@ static inline void barrier_watch_hit(uint32_t a, uint32_t v, int width, void* ra
-     if (!b) return;
-     if (a >= b + 0x40 && a < b + 0xC0) {
-         static int _n = 0;
--        if (_n++ < 48)
-+        if (PS3_LOG_FIRST(_n, 48))
-             fprintf(stderr, "[sync-write] +0x%02X <- 0x%X (w%d) guest-fn=0x%08X\n",
-                     a - b, v, width, ppu_prof_resolve_host(ra));
-     }
-@@ -2713,7 +2714,7 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
-         ppu_fn fn2 = ppu_lookup(toc_reg);
-         if (fn2) {
-             static int _n = 0;
--            if (_n++ < 8) fprintf(stderr, "[ppu] OPD-swap fixup: ctr=0x%08X not a func, using r2=0x%08X\n", addr, toc_reg);
-+            if (PS3_LOG_FIRST(_n, 8)) fprintf(stderr, "[ppu] OPD-swap fixup: ctr=0x%08X not a func, using r2=0x%08X\n", addr, toc_reg);
-             ctx->gpr[2] = addr;        /* callee TOC = the (TOC) value from the code slot */
-             addr = toc_reg; ctx->ctr = toc_reg;
-             fn = fn2;
 diff --git a/runtime/syscalls/sys_fs.c b/runtime/syscalls/sys_fs.c
 index f076ef89..acf3661a 100644
 --- a/runtime/syscalls/sys_fs.c
