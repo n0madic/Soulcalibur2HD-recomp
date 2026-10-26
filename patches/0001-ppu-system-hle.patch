@@ -7,56 +7,11 @@ PPU runtime and system-library HLE fixes Soulcalibur II HD needs.
 - PS3_DEV_FLASH may list several roots (':' on POSIX, ';' on Windows); the first one that holds the file wins.
   One resolver, ps3_dev_flash_path (sys_fs.c), serves both halves of the split filesystem, cellFs (ppu_fs) and the raw
   sys_fs syscalls; sys_fs used to take the whole list as a single directory.
-- cellNetCtl: offline, NetStartDialog ends with CELL_NET_CTL_ERROR_DIALOG_CANCELED instead of "connected", so the
-  game shows its own "sign in to PlayStation Network" message and the menu stays usable. PS3_NET_ONLINE=1 restores
-  the old answers.
 
 ---
 
-diff --git a/libs/network/cellNetCtl.c b/libs/network/cellNetCtl.c
-index c7926c0c..dd1a104a 100644
---- a/libs/network/cellNetCtl.c
-+++ b/libs/network/cellNetCtl.c
-@@ -334,6 +334,13 @@ s32 cellNetCtlDelHandler(s32 hid)
-  * post LOADED + FINISHED to every registered sysutil callback slot and report a
-  * successful result on unload. This unblocks the common boot-time "connecting
-  * to network" gate without requiring a real PSN session.
-+ *
-+ * That only holds while the port claims a connection (PS3_NET_ONLINE=1).
-+ * Offline, GetState already fails, and a title that gets "connected" here goes
-+ * on to create NP matching contexts whose callbacks never come, so its menu
-+ * waits forever. Offline the dialog ends the way it does on a console with no
-+ * link after the player backs out of it: result DIALOG_CANCELED, which games
-+ * answer with their own "could not connect" path.
-  * -----------------------------------------------------------------------*/
- 
- static void netstart_broadcast(u32 status)
-@@ -347,7 +354,8 @@ static void netstart_broadcast(u32 status)
- s32 cellNetCtlNetStartDialogLoadAsync(const CellNetCtlNetStartDialogParam* param)
- {
-     (void)param;
--    printf("[cellNetCtl] NetStartDialogLoadAsync() -> auto-connect\n");
-+    printf("[cellNetCtl] NetStartDialogLoadAsync() -> %s\n",
-+           netctl_online() ? "auto-connect" : "no network, dialog will be cancelled");
-     netstart_broadcast(CELL_SYSUTIL_NET_CTL_NETSTART_LOADED);
-     netstart_broadcast(CELL_SYSUTIL_NET_CTL_NETSTART_FINISHED);
-     return CELL_OK;
-@@ -363,9 +371,11 @@ s32 cellNetCtlNetStartDialogUnloadAsync(CellNetCtlNetStartDialogResult* result)
- {
-     if (result) {
-         result = GUEST_PTR(result, CellNetCtlNetStartDialogResult*);
--        result->result = 0;   /* 0 = connected; endian-safe */
-+        result->result = netctl_online() ? 0   /* 0 = connected; endian-safe */
-+                                         : (s32)ps3_bswap32((u32)CELL_NET_CTL_ERROR_DIALOG_CANCELED);
-     }
--    printf("[cellNetCtl] NetStartDialogUnloadAsync() -> result=0 (connected)\n");
-+    printf("[cellNetCtl] NetStartDialogUnloadAsync() -> %s\n",
-+           netctl_online() ? "result=0 (connected)" : "result=DIALOG_CANCELED (offline)");
-     netstart_broadcast(CELL_SYSUTIL_NET_CTL_NETSTART_UNLOADED);
-     return CELL_OK;
- }
 diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
-index 286bf478..bb6b18ea 100644
+index 1fb1b120..ba3e1d4c 100644
 --- a/libs/system/cellSaveData.c
 +++ b/libs/system/cellSaveData.c
 @@ -64,6 +64,18 @@ static void adopt_gamedata_root(void)
@@ -229,7 +184,7 @@ index 286bf478..bb6b18ea 100644
          return failed ? CELL_SAVEDATA_ERROR_ACCESS_ERROR : (s32)wrote;
      }
  
-@@ -1170,7 +1182,7 @@ static s32 savedata_fixed(int is_save, CellSaveDataSetList* setList,
+@@ -1193,7 +1205,7 @@ static s32 savedata_fixed(int is_save, CellSaveDataSetList* setList,
          }
          printf("[cellSaveData] savedata_fixed: cbresult=%d listed=%u/%u prefix='%s' root='%s'\n",
                 result, listed, count,
@@ -238,7 +193,7 @@ index 286bf478..bb6b18ea 100644
          SAVEDATA_REJECT(CELL_SAVEDATA_ERROR_CBRESULT, w);
      }
      if (!funcStat)
-@@ -1229,6 +1241,20 @@ s32 cellSaveDataListAutoLoad(u32 version, u32 errDialog,
+@@ -1252,6 +1264,20 @@ s32 cellSaveDataListAutoLoad(u32 version, u32 errDialog,
      return savedata_fixed(0, setList, setBuf, funcFixed, funcStat, funcFile, userdata);
  }
  
@@ -259,7 +214,7 @@ index 286bf478..bb6b18ea 100644
  s32 cellSaveDataAutoSave2(u32 version, const char* dirName,
                             u32 errDialog,
                             CellSaveDataSetBuf* setBuf,
-@@ -1296,7 +1322,7 @@ s32 cellSaveDataAutoLoad2(u32 version, const char* dirName,
+@@ -1319,7 +1345,7 @@ s32 cellSaveDataAutoLoad2(u32 version, const char* dirName,
       * compat return until that is understood -- it was dropped once already
       * in the fold merge and cost a boot regression. */
      s32 r = savedata_execute(dirName, 0, setBuf, funcStat, funcFile, userdata);
@@ -268,7 +223,7 @@ index 286bf478..bb6b18ea 100644
  }
  
  s32 cellSaveDataDelete2(u32 container)
-@@ -1422,7 +1448,7 @@ s32 cellSaveDataAutoLoad(u32 version, const char* dirName,
+@@ -1445,7 +1471,7 @@ s32 cellSaveDataAutoLoad(u32 version, const char* dirName,
      /* Same as cellSaveDataAutoLoad2 above, including flОw's first-boot compat
       * return (it calls this old non-_2 variant). */
      s32 r = savedata_execute(dirName, 0, setBuf, funcStat, funcFile, userdata);
@@ -278,10 +233,10 @@ index 286bf478..bb6b18ea 100644
  
  s32 cellSaveDataDelete(u32 version, const char* dirName,
 diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
-index 4d54b72b..941f977f 100644
+index f73907c2..849ba9f9 100644
 --- a/runtime/ppu/ppu_fs.cpp
 +++ b/runtime/ppu/ppu_fs.cpp
-@@ -125,6 +125,7 @@ static void guest_strcpy(char* dst, uint32_t gaddr, size_t cap)
+@@ -127,6 +127,7 @@ static void guest_strcpy(char* dst, uint32_t gaddr, size_t cap)
  /* Defined in runtime/syscalls/sys_fs.c -- shared by all three path
   * translators. (extern "C" is ill-formed at block scope.) */
  extern "C" void ps3_vfs_ps3game_fallback(char* path, size_t cap);
@@ -289,7 +244,7 @@ index 4d54b72b..941f977f 100644
  
  /* Translate a guest path to a host path under ppu_vfs_root. Known PS3 mount
   * prefixes are stripped; the rest is appended to the root. */
-@@ -166,7 +167,7 @@ static void host_path(char* out, size_t cap, const char* guest)
+@@ -168,7 +169,7 @@ static void host_path(char* out, size_t cap, const char* guest)
      if (strncmp(guest, "/dev_flash/", 11) == 0) {
          const char* fw = getenv("PS3_DEV_FLASH");
          if (!fw || !*fw) fw = "D:/recomp/tools/rpcs3/dev_flash";

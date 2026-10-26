@@ -606,6 +606,10 @@ int main(int argc, char** argv)
      * the game's own shaders only on request: both are what a player wants. */
     set_default_env("PS3RECOMP_VK_WINDOW", "1");
     set_default_env("PS3RECOMP_VK_GUEST_PROGRAMS", "1");
+    /* A frame is hundreds of draws: one submission and one wait per draw (the toolkit's default) is what keeps
+     * Vulkan from running the game at full speed; batched they are recorded together and submitted at a readback
+     * or a present. */
+    set_default_env("VK_DRAW_BATCH", "1");
 #endif
 
 #ifdef _WIN32

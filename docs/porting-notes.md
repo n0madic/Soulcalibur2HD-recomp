@@ -1,6 +1,6 @@
 # Porting notes
 
-What had to be changed in the [ps3recomp](https://github.com/sp00nznet/ps3recomp) toolkit (pinned at `a6d76c89`, v0.17.0)
+What had to be changed in the [ps3recomp](https://github.com/sp00nznet/ps3recomp) toolkit (pinned at `4e8f3ca8`, v0.18.0)
 and added around it to make Soulcalibur II HD Online (PS3, version 01.00 or with update 01.01) run. The changes to the toolkit are `patches/`, applied
 in order to a fresh clone by `scripts/build_host.sh` (one patch per area, each with its own description; see "Patches" below); the port's own code is in `src/`. The toolkit's README lists macOS as
 "runs a recompiled game: no": its boot scaffold had never been booted on macOS before this port.
@@ -24,9 +24,15 @@ type, #360 MsgDialog buttons, #361 D3D12 vertex program cache, #362 SPU thread i
 (saturating log counters), #400 (cellFiber scheduler API) and #402 (MinGW tests, time zone from the system). Where one of this port's patches
 overlapped something upstream, upstream's code was kept and the patch reworked on top of it.
 
-| Import | What |
-|---|---|
-| `01-pr416-prio-start` | a thread created above its creator's priority runs until it blocks (`PS3_PRIO_START=1`, set by the launcher): the SurMixer start-up race, where the opening movie sometimes had no sound; was `patches/0012` |
+v0.18.0 merged #416 (a thread created above its creator's priority runs until it blocks, `PS3_PRIO_START=1`, set by the launcher: the SurMixer
+start-up race, where the opening movie sometimes had no sound; imported as `patches/upstream/01-pr416` until then), #424 (shadow compare is
+`depth FUNC reference`, was `patches/0019`) and #243 (`SPU_PCSAMPLE` read once, was a hunk of `patches/0002`), and with them #446, #482, #485, #499,
+#501, #526 and #547. Nothing is imported at the moment (`patches/upstream/` does not exist; `build_host.sh` copes). Open: #569, #585.
+
+Upstream work in v0.18.0 that replaced parts of this port's patches, in the same spirit: the Vulkan engine batching (`VK_DRAW_BATCH=1`, #532, #552;
+`main.cpp` turns it on) replaced the batching of `0006`; controller hot-plug (#472) replaced the SDL pad thread of `0004`; Cmd+Q and the window's close
+button reach the guest (`ps3_host_quit`, #544); the offline NetStartDialog answer (#503) is `0001`'s former cellNetCtl hunk; the audio mix thread's
+priority (#514), the vertex program hash memo (#459) and the release of a stale depth snapshot (#502) overlapped `0003` and `0005`.
 
 ## Patches
 | Patch | Area |
@@ -34,10 +40,10 @@ overlapped something upstream, upstream's code was kept and the patch reworked o
 | `0001-ppu-system-hle` | cellSaveData / cellNetCtl fixes, multi-root `PS3_DEV_FLASH` |
 | `0002-spurs-and-spu-runtime` | SPURS workloads, SPU wake-ups, taskset generations, LS hooks |
 | `0003-audio` | `AUDIO_PEAK` / `AUDIO_WAV`, the Windows mix paced on the block clock |
-| `0004-input` | cellPad keyboard fallbacks (macOS, SDL) and the SDL gamepad thread |
+| `0004-input` | cellPad keyboard fallbacks (macOS, SDL) |
 | `0005-gcm-draw-engine` | display lists, supersampled resolve on the GPU, snapshots, vertex program memo |
-| `0006-vulkan-backend` | Vulkan backend on Windows, batched submission, one wait per present |
-| `0007-metal-backend` | Cmd+Q menu, key events, anisotropic filtering of the old path, resizable window with letterbox |
+| `0006-vulkan-backend` | Vulkan backend on Windows (build: SDL2, glslang) |
+| `0007-metal-backend` | Quit menu item, key events, anisotropic filtering of the old path, resizable window with letterbox |
 | `0009-window-icon` | window icon hook |
 | `0010-portability` | module accessors, optional LGPL ATRAC, MinGW GCC (loader) |
 | `0011-loading-overlay` | "Loading..." over the black window while the game boots |
@@ -46,7 +52,6 @@ overlapped something upstream, upstream's code was kept and the patch reworked o
 | `0015-escape-pause` | Esc is the keyboard's START (pause menu) instead of closing the window |
 | `0016-unlock-in-memory` | `SC2HD_UNLOCK` (the launcher's `--unlock`): save flags set in memory only |
 | `0017-gpu-resolve-downscale` | a resolve out of a surface held at sample resolution is a GPU downscale (Metal, Vulkan) |
-| `0019-shadow-compare-direction` | a depth-texture comparison is `depth FUNC reference`, not `reference FUNC depth` (shadows came out inverted, every backend) |
 
 ## SPURS queues
 The port has no Sony firmware code. cellSpurs is the toolkit's HLE; the one part it cannot do, the lock-free work queues the game
@@ -102,7 +107,7 @@ RIGHT 0x0020, CROSS 0x4000, CIRCLE 0x2000, TRIANGLE 0x1000), `PS3_FSLOG=1` (aio 
 (+ `_AFTER`, `_MAX`, `_DRAWS`), `RSX_CONST_LOG=<lo>,<hi>`, `NV3089_GATE=<file>`.
 
 Memory: the depth-map snapshot of every frame stayed allocated (3-4 MB a frame, 28 GB after two minutes of a fight);
-`patches/0005` releases it (unless the backend keeps one snapshot per depth target, as Vulkan does), the process now stays around 0.6 GB.
+the toolkit releases it since v0.18.0 (#502; `patches/0005` did before it), the process stays around 0.6 GB.
 
 Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony MultiStream: an SPU program
 (image 3) plus an MP3 decoder `flashMP3.pic` that it loads from `/dev_flash`. What it took:
@@ -116,9 +121,9 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
   16 bytes (`spu/sc2_overlays.c`). Interpreted, they made the SPU run at a third of real time: the game wrote 4 blocks of
   audio per 12 and the output was gated 33%, i.e. heavily distorted.
 - `patches/0003`: `AUDIO_PEAK=1`, `AUDIO_WAV=<file>`. (The interpreter's double-precision SPU instructions this port first added are in the toolkit since v0.15.0.)
-- `patches/0007`: Metal backend gets a main menu with Cmd+Q ("Quit <title>"); closing the window or Cmd+Q ends the process (`main.cpp` calls `_exit(0)` when `rsx_backend_pump()` reports the close).
+- `patches/0007`: Metal backend gets a main menu with a "Quit <title>" item; closing the window ends the process (`main.cpp` calls `_exit(0)` when `rsx_backend_pump()` reports the close), Cmd+Q and the item ask the guest to quit (`ps3_host_quit`, toolkit #544).
 - `patches/0002`: `spu_register_ls_hook`, `SPU_GETLOG=<lo>,<hi>` (log MFC transfers touching an LS range), lr in the "synthesised stop" message. `patches/0001`: see below.
-- `patches/0007`: the Metal window drops key down/up events (the pad polls the keyboard itself), so a keypress no longer plays the system alert sound; Cmd shortcuts still reach the menu.
+- `patches/0007`: the Metal window drops key down/up events (the pad polls the keyboard itself), so a keypress no longer plays the system alert sound.
 - Image quality on the Metal path. The game renders 1280x720 with no anti-aliasing of its own. Since v0.16.0 the toolkit has FXAA 3.11 and
   contrast-adaptive sharpening in the present (`PS3_AA=fxaa`, `PS3_SHARPEN=0..1`) and anisotropic filtering of mipmapped samplers
   (`PS3_ANISO=2..16`), all off unless set; the launcher sets FXAA and 16x by default (`--no-fxaa`, `--af N`). FXAA also softens the
@@ -134,7 +139,7 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
   PlayStationNetwork to access online features." with Confirm; the menu stays usable. Online Mode itself is unreachable (the check
   happens when it is entered). `PS3_NET_ONLINE=1` restores the old "connected" answers.
 - `patches/0010`: accessor functions for the thread-local state of the PPU trampoline and the SPU context, so a separate module can reach it (see docs/architecture.md). the LGPL ATRAC3plus decoder is optional (`PS3RECOMP_ATRAC_LGPL`), the host is built without it.
-- `patches/0004`: the SDL gamepad layer runs on one dedicated thread, so a controller plugged in after the start is seen. an SDL keyboard fallback for cellPad on Linux and Windows (the same pad mapping).
+- `patches/0004`: an SDL keyboard fallback for cellPad on Linux and Windows (the same pad mapping).
 - Windows (MinGW): the PPU loader builds with GCC (`patches/0010`; `__thread` instead of `__declspec(thread)`, which GCC ignores, is the toolkit's since v0.16.0); cellAudio never mixes two blocks back to back on WASAPI (`patches/0003`); window icon hook (`patches/0009`).
 - Windows, what kept the game at a frame a second with broken sound after the intro, and what got it running (measured on an
   Intel Core Ultra 7 258V with Arc 140V graphics):
@@ -148,7 +153,8 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
     snapshot per depth target, so the engine freed the texture it had just been handed and the shadow map (and the frame)
     came out magenta. Also one whole-surface readback per picture instead of one per resolve tile or band.
   - `patches/0006`: the Vulkan engine backend waited on the GPU after every draw, upload and clear (three frames a second in a
-    fight); the work is now recorded into one command buffer and submitted at readbacks and presents.
+    fight); the work is now recorded into one command buffer and submitted at readbacks and presents (the toolkit's `VK_DRAW_BATCH=1` since v0.18.0, which
+    `main.cpp` turns on; `0006` used to carry its own).
   - `patches/0005`: the per-frame front-buffer copy is a row copy instead of an accessor call pair per pixel.
   - `patches/0003`: with the frame faster, 5-10% of the audio blocks in a fight came out silent (crackle): the first fix, a
     4 ms minimum gap between two mixed blocks, measured from a `Sleep(1)` that wakes late, often left the game's audio
@@ -168,7 +174,7 @@ Audio works (BGM, voices, effects through SDL). The game's audio engine is Sony 
       another shape, a 2D transfer or a surface store touches those bytes (`RSX_ENGINE_GPU_RESOLVE=0` stores every
       resolve as before). Compared on the same frames with the old path: identical. About 38 frames a second.
     - `patches/0006`: a present was three submissions and three waits, one of them a full-frame readback for a debug
-      hook; now one of each. The front-buffer copy's readback reuses its staging buffer. About 49.
+      hook; now one of each (toolkit since v0.18.0, #532/#552). The front-buffer copy's readback reuses its staging buffer. About 49.
     - `patches/0005`: every draw re-walked, byte-hashed and re-analysed the vertex program (hundreds a frame); that is
       now kept until the program changes. With `main.cpp`'s frame loop sleeping 1 ms instead of 4 (a finished frame
       waited out the sleep before it was drained and flipped), a fight runs at the 60 Hz cap.

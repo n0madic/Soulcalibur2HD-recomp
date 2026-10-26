@@ -8,7 +8,7 @@ cellSaveData: SC2HD_UNLOCK sets flags of the game's save data in memory only.
 ---
 
 diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
-index bb6b18ea..e79faeee 100644
+index ba3e1d4c..54b76fac 100644
 --- a/libs/system/cellSaveData.c
 +++ b/libs/system/cellSaveData.c
 @@ -672,6 +672,50 @@ static u32 enumerate_save_files(const char* save_path,

@@ -8,26 +8,26 @@ SPURS HLE and SPU runtime: workloads, wake-ups, thread images, diagnostics.
   instead of answering the new taskset's signals or clearing its task bits.
 - spu_register_ls_hook, SPU_GETLOG=<lo>,<hi> (log MFC transfers touching an LS range), lr in the "synthesised stop"
   message.
-- The WAIT_SIGNAL wait and wake share one lock/broadcast/timed-wait helper set (spu_workload.c).
-- mfc_for reads SPU_PCSAMPLE once (toolkit v0.17.0 looked it up on every MFC channel access while it was unset;
-  getenv walks the environment, and the DSP thread of the game's audio engine ran at half speed: about every
-  second audio block was silent in a fight, and the sound was choppy and rough).
+- The WAIT_SIGNAL wait and wake share one lock/broadcast/timed-wait helper set (spu_workload.c); beside the toolkit's
+  wake on a coherent write to the signal bitset (#423) a task with a queue as its wait object still polls the queue
+  every 2 ms. The signalled bit is updated before s_sig_lock is taken, as that wake needs (the lock-line lock never
+  nests inside it).
 
 ---
 
 diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
-index 19a8516f..f72ada50 100644
+index 82ea66c6..0342869c 100644
 --- a/libs/spurs/cellSpurs.c
 +++ b/libs/spurs/cellSpurs.c
-@@ -453,6 +453,7 @@ static struct SpursInst {
+@@ -457,6 +457,7 @@ static struct SpursInst {
      struct SpursPmSlot slots[6];
      u8 active[16], idle[16];
      u32 cursor, pass_no;
 +    u32 next_taskset_wid; /* workload id of the next taskset (SPU side reads it from the taskset) */
  } s_inst[MAX_SPURS_INST];
  static SRWLOCK s_inst_directory_lock = SRWLOCK_INIT;
- static SRWLOCK s_workload_registry_lock = SRWLOCK_INIT;
-@@ -493,6 +494,28 @@ static void spurs_api_unlock(struct SpursInst* si)
+ 
+@@ -528,6 +529,28 @@ static void spurs_api_unlock(struct SpursInst* si)
  
  static DWORD WINAPI spurs_kernel_thread(LPVOID p);
  
@@ -56,7 +56,7 @@ index 19a8516f..f72ada50 100644
  static s32 spurs_initialize_common(u32 spurs_ea, u32 nspus, const char* prefix)
  {
      if (!nspus || nspus > 6) return CELL_SPURS_CORE_ERROR_INVAL;
-@@ -516,6 +539,7 @@ static s32 spurs_initialize_common(u32 spurs_ea, u32 nspus, const char* prefix)
+@@ -551,6 +574,7 @@ static s32 spurs_initialize_common(u32 spurs_ea, u32 nspus, const char* prefix)
      ReleaseSRWLockExclusive(&si->lock);
      ReleaseSRWLockExclusive(&s_inst_directory_lock);
      si->nspus = (nspus > 0 && nspus <= CELL_SPURS_MAX_SPU) ? nspus : 1;
@@ -64,7 +64,7 @@ index 19a8516f..f72ada50 100644
      memset(si->prefix, 0, sizeof(si->prefix));
      if (prefix) memcpy(si->prefix, prefix, 15);
  
-@@ -525,6 +549,11 @@ static s32 spurs_initialize_common(u32 spurs_ea, u32 nspus, const char* prefix)
+@@ -560,6 +584,11 @@ static s32 spurs_initialize_common(u32 spurs_ea, u32 nspus, const char* prefix)
      memset(vm_base + spurs_ea, 0, SPURS_INST_SIZE);
      *(vm_base + spurs_ea + SPURS_NSPUS) = (u8)si->nspus;
      vm_write64(spurs_ea + SPURS_WKL_FLAG, 0xFFFFFFFFFFFFFFFFull); /* no receiver */
@@ -76,7 +76,7 @@ index 19a8516f..f72ada50 100644
  
      s32 start_rc = spurs_scheduler_start(si);
      AcquireSRWLockExclusive(&si->lock);
-@@ -872,7 +901,8 @@ static s32 spurs_create_taskset(CellSpurs* spurs, CellSpursTaskset* taskset,
+@@ -907,7 +936,8 @@ static s32 spurs_create_taskset(CellSpurs* spurs, CellSpursTaskset* taskset,
      /* Write the REAL big-endian CellSpursTaskset layout (fork Option-B) so the lifted
       * SPU leaf + spurs_pm_build_context read valid data (the native writes above are
       * little-endian = garbage to the SPU). Overwrites 0x00-0x80 with BE fields. */
@@ -86,7 +86,7 @@ index 19a8516f..f72ada50 100644
                         taskset_size, /*evf1*/0, /*evf2*/0);
      g_ydkj_real_taskset_ea = taskset_ea;
  
-@@ -914,11 +944,14 @@ s32 cellSpursDestroyTaskset(CellSpursTaskset* taskset)
+@@ -949,11 +979,14 @@ s32 cellSpursDestroyTaskset(CellSpursTaskset* taskset)
  
  s32 cellSpursShutdownTaskset(CellSpursTaskset* taskset)
  {
@@ -102,29 +102,10 @@ index 19a8516f..f72ada50 100644
  }
  
 diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
-index 59f5e4b8..37bac44f 100644
+index 5fc50208..14e50160 100644
 --- a/runtime/spu/spu_channels.c
 +++ b/runtime/spu/spu_channels.c
-@@ -319,9 +319,15 @@ static DWORD WINAPI spu_pcsample_thread(LPVOID p)
- 
- static mfc_engine* mfc_for(spu_context* ctx)
- {
--    { static volatile LONG started = 0; const char* e;
--      if (!started && (e = getenv("SPU_PCSAMPLE")) && !InterlockedExchange(&started, 1))
--          CreateThread(NULL, 0, spu_pcsample_thread, (LPVOID)(uintptr_t)(atoi(e) * 1000), 0, NULL); }
-+    /* SPU_PCSAMPLE is read once. This runs on every MFC channel access, and getenv walks the whole
-+     * environment: unset, the variable was looked up on every one of them, which halved the rate of an
-+     * SPU program that talks to its MFC in a tight loop (a title's audio DSP thread, choppy sound). */
-+    { static volatile LONG s_pcsample = -1;   /* -1 not read yet, 0 off, 1 sampler started */
-+      if (s_pcsample < 0) {
-+          const char* e = getenv("SPU_PCSAMPLE");
-+          if (InterlockedCompareExchange(&s_pcsample, e ? 1 : 0, -1) == -1 && e)
-+              CreateThread(NULL, 0, spu_pcsample_thread, (LPVOID)(uintptr_t)(atoi(e) * 1000), 0, NULL);
-+      } }
-     AcquireSRWLockShared(&s_mfc_claim_lock);
-     for (spu_mfc_slot* slot = s_mfc_slots; slot; slot = slot->next) {
-         if (slot->ctx == ctx) {
-@@ -1627,6 +1633,33 @@ static int spu_taskset_resident_image(const spu_context* ctx)
+@@ -2061,6 +2061,33 @@ static int spu_taskset_resident_image(const spu_context* ctx)
   * at LS 0x3000 (below it is the SPURS kernel/policy/context, 0x290..0x2FFF). */
  #define SPU_TASKSET_TASK_LO 0x3000u
  
@@ -158,7 +139,7 @@ index 59f5e4b8..37bac44f 100644
  /* Content-signature variant: FMOD COPIES codec overlays to the heap before
   * streaming them into the swap slot, so the source EA is unknowable ahead of
   * time -- match the first 16 bytes of the streamed content instead. */
-@@ -1917,9 +1950,14 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
+@@ -2364,9 +2391,14 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
              }
              yz_lockstep_block_begin(ctx);
              spu_taskset_parked_add(ts, tid, wobj);
@@ -174,7 +155,7 @@ index 59f5e4b8..37bac44f 100644
              spu_ef_deliver_owed(ctx, wobj);
          }
          ctx->gpr[3]._u32[0] = 0;
-@@ -2332,6 +2370,7 @@ void spu_indirect_branch(spu_context* ctx)
+@@ -2807,6 +2839,7 @@ void spu_indirect_branch(spu_context* ctx)
       * the job" and reported stop_code 0, which reads as a runaway and sent a long
       * chase after phantom memory corruption. Decode the target word instead: a
       * `stop` is opcode 0 in the top 11 bits, so this is unambiguous. */
@@ -182,7 +163,7 @@ index 59f5e4b8..37bac44f 100644
      if (!fn) {
          uint32_t p0 = ctx->pc & SPU_LS_MASK;
          if (p0 + 3 < SPU_LS_SIZE) {
-@@ -2341,8 +2380,8 @@ void spu_indirect_branch(spu_context* ctx)
+@@ -2816,8 +2849,8 @@ void spu_indirect_branch(spu_context* ctx)
                  ctx->stop_code = w & 0x3FFFu;
                  static int _n = 0;
                  if (PS3_LOG_FIRST(_n, 8))
@@ -194,12 +175,12 @@ index 59f5e4b8..37bac44f 100644
                  return;
              }
 diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
-index f46d415f..50036e35 100644
+index c5ccbec7..d51b7578 100644
 --- a/runtime/spu/spu_context.h
 +++ b/runtime/spu/spu_context.h
-@@ -394,6 +394,11 @@ typedef struct spu_context {
-     uint32_t drain_ret_pc;
- } spu_context;
+@@ -443,6 +443,11 @@ typedef struct spu_context {
+ #define SPU_EVENT_CLEAR(c, b) __atomic_fetch_and(&(c)->event_status, ~(uint32_t)(b), __ATOMIC_SEQ_CST)
+ #endif
  
 +/* Host stand-in for runtime-loaded SPU code at one LS address (see spu_channels.c).
 + * Returns nonzero when it handled the call and left ctx->pc at the return address. */
@@ -210,7 +191,7 @@ index f46d415f..50036e35 100644
   * base) that the HLE kernel plants as exitToKernelAddr / selectWorkloadAddr in
   * the SpursKernelContext. A policy module branching to them is performing a
 diff --git a/runtime/spu/spu_dma.h b/runtime/spu/spu_dma.h
-index 7b0debec..cc130417 100644
+index 8c4ccaa8..ac585d96 100644
 --- a/runtime/spu/spu_dma.h
 +++ b/runtime/spu/spu_dma.h
 @@ -18,6 +18,7 @@
@@ -242,10 +223,10 @@ index 7b0debec..cc130417 100644
       * load; remember where it came from so the substitution below can name it.
       * That guest address is what a write-watch needs to find its producer. */
 diff --git a/runtime/spu/spu_workload.c b/runtime/spu/spu_workload.c
-index 20089610..9f792b46 100644
+index 3ce8d0d6..70e10fa1 100644
 --- a/runtime/spu/spu_workload.c
 +++ b/runtime/spu/spu_workload.c
-@@ -254,6 +254,7 @@ typedef struct {
+@@ -391,6 +391,7 @@ typedef struct {
      int                 have_r3;
      uint32_t            taskset_ea;   /* captured race-free at dispatch (globals get clobbered) */
      uint32_t            taskid;
@@ -253,7 +234,7 @@ index 20089610..9f792b46 100644
  } spu_async_job;
  
  /* ---- Persistent per-taskset local store (LBP_PERSIST_LS) ------------------
-@@ -384,6 +385,27 @@ static uint8_t* ts_running(uint32_t taskset_ea)
+@@ -521,6 +522,27 @@ static uint8_t* ts_running(uint32_t taskset_ea)
  static void ts_lock(void)   { while (InterlockedExchange(&s_ts_lock, 1)) Sleep(0); }
  static void ts_unlock(void) { InterlockedExchange(&s_ts_lock, 0); }
  
@@ -281,7 +262,7 @@ index 20089610..9f792b46 100644
  static void spu_taskset_mark(uint32_t taskset_ea, uint32_t t, int on)
  {
      if (!taskset_ea || t >= 128 || s_ts_held) return;   /* held: caller set it */
-@@ -505,6 +527,7 @@ void spu_taskset_start_pending(uint32_t taskset_ea)
+@@ -642,6 +664,7 @@ void spu_taskset_start_pending(uint32_t taskset_ea)
  
  static void spu_async_run(spu_async_job* j)
  {
@@ -289,7 +270,7 @@ index 20089610..9f792b46 100644
      spu_taskset_mark(j->taskset_ea, j->taskid, 1);
      /* Persistent per-taskset LS: acquire (+serialize) the taskset's LS, or fall
       * back to a fresh per-dispatch LS when disabled / no taskset. */
-@@ -845,7 +868,7 @@ static void spu_async_run(spu_async_job* j)
+@@ -982,7 +1005,7 @@ static void spu_async_run(spu_async_job* j)
              fprintf(stderr, "[spu_workload] async image=%d RETURNED rc=%d "
                      "(job ran to completion, did not loop)\n", j->image_id, rc);
              spu_serial_release();
@@ -298,7 +279,7 @@ index 20089610..9f792b46 100644
          }
          /* Persistent LS is retained in its taskset slot for the next task; a
           * per-dispatch LS is freed. */
-@@ -984,6 +1007,55 @@ static pthread_mutex_t s_sig_lock = PTHREAD_MUTEX_INITIALIZER;
+@@ -1124,6 +1147,55 @@ static pthread_mutex_t s_sig_lock = PTHREAD_MUTEX_INITIALIZER;
  static pthread_cond_t  s_sig_cv   = PTHREAD_COND_INITIALIZER;
  #endif
  
@@ -354,9 +335,9 @@ index 20089610..9f792b46 100644
  /* Which (taskset, task) pairs are currently parked in WAIT_SIGNAL.
   *
   * A PPU->SPU event-flag Set must be able to reach a task that parked WITHOUT
-@@ -1004,18 +1076,38 @@ void spu_taskset_signal_task(uint32_t taskset_ea, uint32_t taskId);  /* defined
- static volatile uint64_t s_parked[SPU_PARKED_MAX];   /* (taskset<<32)|(taskId+1), 0 = free */
- static volatile uint32_t s_parked_obj[SPU_PARKED_MAX];  /* LS[0x2FD0] wait object, 0 = unknown */
+@@ -1158,15 +1230,35 @@ static volatile uint32_t s_parked_obj[SPU_PARKED_MAX];  /* LS[0x2FD0] wait objec
+ static volatile int s_parked_count;
+ static volatile int s_parked_hw;
  
 +/* This thread's own entry in s_parked. A game may recreate a taskset at the same address while
 + * the old task's host thread is still parked (the HLE ShutdownTaskset does not stop it), so two
@@ -383,44 +364,54 @@ index 20089610..9f792b46 100644
 -    uint64_t key = ((uint64_t)taskset_ea << 32) | (uint64_t)(taskId + 1);
 +    const uint64_t key = parked_key(taskset_ea, taskId);
      for (int i = 0; i < SPU_PARKED_MAX; i++)
--        if (s_parked[i] == 0) { s_parked_obj[i] = wait_obj; s_parked[i] = key; return; }
-+        if (s_parked[i] == 0) { s_parked_obj[i] = wait_obj; s_parked[i] = key; s_tls_parked_slot = i; return; }
- }
+         if (s_parked[i] == 0) {
+             int hw = __atomic_load_n(&s_parked_hw, __ATOMIC_RELAXED);
+             while (hw <= i && !__atomic_compare_exchange_n(&s_parked_hw, &hw, i + 1, 1,
+                                                            __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+-            s_parked_obj[i] = wait_obj; s_parked[i] = key;
++            s_parked_obj[i] = wait_obj; s_parked[i] = key; s_tls_parked_slot = i;
+             __atomic_fetch_add(&s_parked_count, 1, __ATOMIC_RELAXED);
+             return;
+         }
+@@ -1174,13 +1266,12 @@ void spu_taskset_parked_add(uint32_t taskset_ea, uint32_t taskId, uint32_t wait_
  
  void spu_taskset_parked_del(uint32_t taskset_ea, uint32_t taskId)
  {
 -    uint64_t key = ((uint64_t)taskset_ea << 32) | (uint64_t)(taskId + 1);
 -    for (int i = 0; i < SPU_PARKED_MAX; i++)
--        if (s_parked[i] == key) { s_parked[i] = 0; return; }
+-        if (s_parked[i] == key) {
+-            s_parked[i] = 0;
+-            __atomic_fetch_sub(&s_parked_count, 1, __ATOMIC_RELAXED);
+-            return;
+-        }
 +    const int i = parked_find(parked_key(taskset_ea, taskId));
 +    s_tls_parked_slot = -1;
-+    if (i >= 0) s_parked[i] = 0;
++    if (i >= 0) {
++        s_parked[i] = 0;
++        __atomic_fetch_sub(&s_parked_count, 1, __ATOMIC_RELAXED);
++    }
  }
  
  /* Event bits owed to a task, keyed by the OBJECT it waits on (flag - 0x80).
-@@ -1131,17 +1223,10 @@ static void spu_signalled_update(uint32_t taskset_ea, uint32_t taskId, int set)
- void spu_taskset_signal_task(uint32_t taskset_ea, uint32_t taskId)
+@@ -1298,15 +1389,7 @@ static void spu_signalled_update(uint32_t taskset_ea, uint32_t taskId, int set)
+ static void spu_taskset_wake_written(void* opaque)
  {
-     if (!taskset_ea || taskId >= 128) return;
+     (void)opaque;
 -#ifdef _WIN32
 -    AcquireSRWLockExclusive(&s_sig_lock);
-+    sig_lock();
-     spu_signalled_update(taskset_ea, taskId, 1);
 -    WakeAllConditionVariable(&s_sig_cv);
 -    ReleaseSRWLockExclusive(&s_sig_lock);
 -#else
 -    pthread_mutex_lock(&s_sig_lock);
--    spu_signalled_update(taskset_ea, taskId, 1);
 -    pthread_cond_broadcast(&s_sig_cv);
 -    pthread_mutex_unlock(&s_sig_lock);
 -#endif
-+    sig_broadcast();
-+    sig_unlock();
-     { static int _n = 0; if (PS3_LOG_FIRST(_n, 24))
-         fprintf(stderr, "[spu_workload] signal task %u (taskset 0x%08X)\n",
-                 taskId, taskset_ea); fflush(stderr); }
-@@ -1185,22 +1270,50 @@ void spu_taskset_line_committed(uint32_t line)
-     for (int i = 0; i < SPU_PARKED_MAX; i++) {
++    sig_wake_all();
+ }
+ 
+ /* Deliver a signal to a task (callable from any PPU/host thread). */
+@@ -1366,22 +1449,50 @@ void spu_taskset_line_committed(uint32_t line)
+     for (int i = 0; i < n; i++) {
          const uint64_t k = s_parked[i];
          if (!k || (((uint32_t)(k >> 32) + CSTS_SIGNALLED) & ~127u) != line) continue;
 -#ifdef _WIN32
@@ -480,28 +471,14 @@ index 20089610..9f792b46 100644
  int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
  {
      if (!taskset_ea || taskId >= 128) return 0;
-@@ -1257,24 +1370,11 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
-     /* Release the global SPU-serial lock while parked so another SPU task can
-      * run (and possibly signal us); re-acquired before returning to resume. */
-     spu_serial_release();
+@@ -1442,10 +1553,11 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
+     spu_lockline_lock();
+     spu_coh_watch_add(&watch, taskset_ea + CSTS_SIGNALLED, spu_taskset_wake_written, NULL);
+     spu_lockline_unlock();
 -#ifdef _WIN32
 -    AcquireSRWLockExclusive(&s_sig_lock);
 -    while (!spurs_bitset_test(taskset_ea + CSTS_SIGNALLED, taskId)) {
 -        if (!SleepConditionVariableSRW(&s_sig_cv, &s_sig_lock, 1000, 0)) {
--            static int _n = 0;
--            if (++secs && _n < 16) { _n++;
--                fprintf(stderr, "[spu_workload] task %u (taskset 0x%08X) sleeping "
--                        "%us in WAIT_SIGNAL\n", taskId, taskset_ea, secs); fflush(stderr); }
--            if (drain && secs >= drain) { drained = 1; break; }
--        }
--    }
--    if (!drained) spu_signalled_update(taskset_ea, taskId, 0);
--    ReleaseSRWLockExclusive(&s_sig_lock);
--#else
--    pthread_mutex_lock(&s_sig_lock);
--    while (!spurs_bitset_test(taskset_ea + CSTS_SIGNALLED, taskId)) {
--        struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += 1;
--        if (pthread_cond_timedwait(&s_sig_cv, &s_sig_lock, &ts) != 0) {
 +    sig_lock();
 +    const uint32_t wait_obj = spu_parked_wait_obj(taskset_ea, taskId);
 +    while (!spurs_bitset_test(taskset_ea + CSTS_SIGNALLED, taskId) &&
@@ -510,15 +487,32 @@ index 20089610..9f792b46 100644
              static int _n = 0;
              if (++secs && _n < 16) { _n++;
                  fprintf(stderr, "[spu_workload] task %u (taskset 0x%08X) sleeping "
-@@ -1282,16 +1382,15 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
+@@ -1453,33 +1565,19 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
              if (drain && secs >= drain) { drained = 1; break; }
          }
      }
--    if (!drained) spu_signalled_update(taskset_ea, taskId, 0);
+-    ReleaseSRWLockExclusive(&s_sig_lock);
+-#else
+-    pthread_mutex_lock(&s_sig_lock);
+-    while (!spurs_bitset_test(taskset_ea + CSTS_SIGNALLED, taskId)) {
+-        struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += 1;
+-        if (pthread_cond_timedwait(&s_sig_cv, &s_sig_lock, &ts) != 0) {
+-            static int _n = 0;
+-            if (++secs && _n < 16) { _n++;
+-                fprintf(stderr, "[spu_workload] task %u (taskset 0x%08X) sleeping "
+-                        "%us in WAIT_SIGNAL\n", taskId, taskset_ea, secs); fflush(stderr); }
+-            if (drain && secs >= drain) { drained = 1; break; }
+-        }
+-    }
 -    pthread_mutex_unlock(&s_sig_lock);
 -#endif
-+    if (!drained && !spu_task_is_stale()) spu_signalled_update(taskset_ea, taskId, 0);
 +    sig_unlock();
+     spu_lockline_lock();
+     spu_coh_watch_remove(&watch);
+     spu_lockline_unlock();
+     /* Signals coalesce in the bit, so consuming it outside s_sig_lock loses none. */
+-    if (!drained) spu_signalled_update(taskset_ea, taskId, 0);
++    if (!drained && !spu_task_is_stale()) spu_signalled_update(taskset_ea, taskId, 0);
      if (drained) { static int _d = 0; if (PS3_LOG_FIRST(_d, 24))
          fprintf(stderr, "[spu_workload] task %u (taskset 0x%08X) WS_DRAIN resume "
                  "after %us (no signal)\n", taskId, taskset_ea, secs); fflush(stderr); }
@@ -530,7 +524,7 @@ index 20089610..9f792b46 100644
  }
  
  int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
-@@ -1340,7 +1439,8 @@ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
+@@ -1529,7 +1627,8 @@ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
       * the next CreateTask overwriting the single-slot globals -- with two audio
       * tasks that made both run task 1's descriptor. */
      { extern uint32_t g_ydkj_real_taskset_ea, g_ydkj_real_taskid;

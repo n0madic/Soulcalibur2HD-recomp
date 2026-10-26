@@ -7,13 +7,13 @@ Module access and portability: separate game module, optional LGPL decoder, MinG
 - ppu_loader.cpp builds with MinGW GCC: the profiling sampler (PS3_SAMPLE_*) reads the sampled thread's stack through
   ReadProcessMemory there (GCC has no structured exception handling), and ppu_resv_break is not declared extern "C"
   and defined static afterwards.
-- timespec_get is not declared by the MinGW msvcrt headers (only for UCRT): spu_interp.c's profiling sampler falls
-  back to time(), spu_workload.c's job profiler uses clock_gettime like the rest of the file.
+- timespec_get is not declared by the MinGW msvcrt headers (only for UCRT): spu_interp.c's profiling sampler (the toolkit's
+  interp_stats_step) falls back to time(), spu_workload.c's job profiler uses clock_gettime like the rest of the file.
 
 ---
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index d0363544..61d6d7c5 100644
+index e6065c67..c2dcab12 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -76,9 +76,16 @@ endif()
@@ -37,10 +37,10 @@ index d0363544..61d6d7c5 100644
  # Runtime core (syscalls, PPU, SPU, memory)
  file(GLOB_RECURSE RUNTIME_SOURCES
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index 16213a49..10844d97 100644
+index 39987397..3537f37d 100644
 --- a/runtime/ppu/ppu_loader.cpp
 +++ b/runtime/ppu/ppu_loader.cpp
-@@ -627,7 +627,12 @@ static uint32_t samp_stack_guest(HANDLE h, const CONTEXT* c)
+@@ -632,7 +632,12 @@ static uint32_t samp_stack_guest(HANDLE h, const CONTEXT* c)
      const uintptr_t* sp = (const uintptr_t*)c->Rsp;
      for (int i = 0; i < 512; i++) {          /* 4 KB of stack */
          uintptr_t v;
@@ -53,7 +53,7 @@ index 16213a49..10844d97 100644
          uint32_t g = samp_lookup(v);
          if (g) return g;
      }
-@@ -701,7 +706,7 @@ static DWORD WINAPI samp_thread(LPVOID p)
+@@ -788,7 +793,7 @@ static DWORD WINAPI samp_thread(LPVOID p)
   * Writing the word leaves memory self-consistent: lwarx, the CAS and the
   * polling reader all see the same thing, so the guest behaves as it would if
   * whatever should have cleared the counter had done so. */
@@ -62,7 +62,7 @@ index 16213a49..10844d97 100644
  static DWORD WINAPI poke_thread(LPVOID p)
  {
      const uint32_t ea  = (uint32_t)(uintptr_t)p;
-@@ -1986,6 +1991,9 @@ void flow_lookup_alloc(unsigned int p) {
+@@ -2109,6 +2114,9 @@ void flow_lookup_alloc(unsigned int p) {
  
  /* Cross-fragment trampoline pointer (matches the lifted header's TLS decl). */
  extern "C" PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*) = nullptr;
@@ -73,10 +73,10 @@ index 16213a49..10844d97 100644
  /* Per-thread active guest context, for the crash handler to report the guest PC
   * (ctx->pc, updated by lifted code at block boundaries) of a host AV. */
 diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
-index 50036e35..2363008d 100644
+index d51b7578..715fcdc6 100644
 --- a/runtime/spu/spu_context.h
 +++ b/runtime/spu/spu_context.h
-@@ -775,6 +775,17 @@ static inline int spu_channel_has_data(const spu_channel* ch)
+@@ -870,6 +870,17 @@ static inline int spu_channel_has_data(const spu_channel* ch)
   * function in the active image and runs it. Referenced by SPU_RET/SPU_DRAIN. */
  void spu_indirect_branch(spu_context* ctx);
  
@@ -94,7 +94,7 @@ index 50036e35..2363008d 100644
  /* Pending cross-function transfer target; NULL when none. Thread-local: each
   * spu_context is pinned to one host thread for its lifetime. */
  extern SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*);
-@@ -784,6 +795,7 @@ extern SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*);
+@@ -879,6 +890,7 @@ extern SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*);
   * trampoline hop, which is the one that actually precedes a bad branch. */
  extern SPU_THREAD_LOCAL uint32_t g_spu_pch[8];
  extern SPU_THREAD_LOCAL unsigned g_spu_pch_n;
@@ -103,10 +103,10 @@ index 50036e35..2363008d 100644
  /* Central per-transfer hooks (stubbed in spu_drain.c until their milestones). */
  void yz_lockstep_tick(spu_context* ctx);             /* round-robin token gate */
 diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
-index fc3cea12..237ebecd 100644
+index 49bc2b94..b041f62c 100644
 --- a/runtime/spu/spu_drain.c
 +++ b/runtime/spu/spu_drain.c
-@@ -21,6 +21,11 @@ SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*) = 0;
+@@ -32,6 +32,11 @@ SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*) = 0;
  SPU_THREAD_LOCAL uint32_t g_spu_pch[8];
  SPU_THREAD_LOCAL unsigned g_spu_pch_n;
  
@@ -118,6 +118,42 @@ index fc3cea12..237ebecd 100644
  /* yz_lockstep_tick now has its real body in spu_lockstep.c (milestone 2). */
  
  /* SPURS task-launch interception at a trampoline hop (milestone: SPURS kernel).
+diff --git a/runtime/spu/spu_interp.c b/runtime/spu/spu_interp.c
+index e9b8f613..6574b339 100644
+--- a/runtime/spu/spu_interp.c
++++ b/runtime/spu/spu_interp.c
+@@ -440,8 +440,13 @@ static void interp_stats_step(const spu_context* ctx)
+ {
+     interp_stats_bump(s_is_img, s_is_page, s_is_cnt, ctx->image_id, ctx->pc & ~0x3FFu);
+     if ((++s_is_tot & 0xFFFF) != 0) return;
++#if defined(_WIN32) && !defined(_UCRT)
++    /* the msvcrt headers of MinGW do not declare timespec_get; whole seconds are enough here */
++    unsigned long long now = (unsigned long long)time(NULL) * 1000ull;
++#else
+     struct timespec ts; timespec_get(&ts, TIME_UTC);   /* stdlib: fixtures link this file alone */
+     unsigned long long now = (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;
++#endif
+     if (!s_is_t0) { s_is_t0 = now; return; }
+     if (now - s_is_t0 < (unsigned long long)s_is * 1000ull) return;
+     fprintf(stderr, "[spu-interp] %.1fM steps/s over %lds\n", s_is_tot / 1e6 / (double)s_is, s_is);
+diff --git a/runtime/spu/spu_workload.c b/runtime/spu/spu_workload.c
+index 70e10fa1..aeed2d2a 100644
+--- a/runtime/spu/spu_workload.c
++++ b/runtime/spu/spu_workload.c
+@@ -1101,11 +1101,11 @@ int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
+     static int s_prof = -1;
+     if (s_prof < 0) { const char* e = getenv("SPU_JOBPROF"); s_prof = e ? atoi(e) : 0; }
+     struct timespec t0, t1;
+-    if (s_prof) timespec_get(&t0, TIME_UTC);
++    if (s_prof) clock_gettime(CLOCK_REALTIME, &t0);
+     int rc = spu_run_spurs_job(fn, image_id, job_ea, job_desc_size);
+     if (s_prof) {
+         static double acc[64], last; static unsigned cnt[64];
+-        timespec_get(&t1, TIME_UTC);
++        clock_gettime(CLOCK_REALTIME, &t1);
+         double now = t1.tv_sec + t1.tv_nsec * 1e-9;
+         unsigned k = (unsigned)image_id & 63;
+         acc[k] += now - (t0.tv_sec + t0.tv_nsec * 1e-9); cnt[k]++;
 diff --git a/third_party/at3_stub/at3_stub.c b/third_party/at3_stub/at3_stub.c
 new file mode 100644
 index 00000000..9de4e969
@@ -139,10 +175,10 @@ index 00000000..9de4e969
 +    return -1;
 +}
 diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
-index 9d9df717..cc4159f5 100644
+index a657ba61..8926c963 100644
 --- a/tools/ppu_lifter.py
 +++ b/tools/ppu_lifter.py
-@@ -474,8 +474,16 @@ extern "C" void ps3_indirect_call_to(ppu_context* ctx, uint32_t target);
+@@ -589,8 +589,16 @@ extern "C" void ps3_indirect_call_to(ppu_context* ctx, uint32_t target);
  extern "C" void ps3_hle_call(unsigned int nid, ppu_context* ctx);
  
  /* Trampoline function pointer for cross-fragment branches (TLS).
@@ -160,39 +196,3 @@ index 9d9df717..cc4159f5 100644
  
  /* Drain pending trampolines after any call that might set g_trampoline_fn.
   * Converts cross-fragment fallthrough chains into iterative loops. */
-diff --git a/runtime/spu/spu_interp.c b/runtime/spu/spu_interp.c
-index 90a2f77..bc7ffb2 100644
---- a/runtime/spu/spu_interp.c
-+++ b/runtime/spu/spu_interp.c
-@@ -467,8 +467,13 @@ uint32_t spu_interp_run_until(spu_context* ctx, uint32_t start_lsa, uint32_t sto
-             }
-             s_tot++;
-             if ((s_tot & 0xFFFF) == 0) {
-+#if defined(_WIN32) && !defined(_UCRT)
-+                /* the msvcrt headers of MinGW do not declare timespec_get; whole seconds are enough here */
-+                unsigned long long now = (unsigned long long)time(NULL) * 1000ull;
-+#else
-                 struct timespec ts; timespec_get(&ts, TIME_UTC);   /* stdlib: fixtures link this file alone */
-                 unsigned long long now = (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;
-+#endif
-                 if (!s_t0) s_t0 = now;
-                 else if (now - s_t0 >= (unsigned long long)s_is * 1000ull) {
-                     fprintf(stderr, "[spu-interp] %.1fM steps/s over %lds; top pages:\n",
-diff --git a/runtime/spu/spu_workload.c b/runtime/spu/spu_workload.c
-index 9f792b4..0fcaff7 100644
---- a/runtime/spu/spu_workload.c
-+++ b/runtime/spu/spu_workload.c
-@@ -962,11 +962,11 @@ int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
-     static int s_prof = -1;
-     if (s_prof < 0) { const char* e = getenv("SPU_JOBPROF"); s_prof = e ? atoi(e) : 0; }
-     struct timespec t0, t1;
--    if (s_prof) timespec_get(&t0, TIME_UTC);
-+    if (s_prof) clock_gettime(CLOCK_REALTIME, &t0);
-     int rc = spu_run_spurs_job(fn, image_id, job_ea, job_desc_size);
-     if (s_prof) {
-         static double acc[64], last; static unsigned cnt[64];
--        timespec_get(&t1, TIME_UTC);
-+        clock_gettime(CLOCK_REALTIME, &t1);
-         double now = t1.tv_sec + t1.tv_nsec * 1e-9;
-         unsigned k = (unsigned)image_id & 63;
-         acc[k] += now - (t0.tv_sec + t0.tv_nsec * 1e-9); cnt[k]++;

@@ -180,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     # The toolkit's own present options (PS3_AA, PS3_ANISO) are off unless set; the launcher turns them on by default
     env["PS3_AA"] = "off" if args.fxaa is False else "fxaa"
     env["PS3_ANISO"] = str(args.af if args.af is not None else 16)
-    # A thread created above its creator's priority runs until it blocks, as on lv2 (patches/upstream/01-pr416): the
+    # A thread created above its creator's priority runs until it blocks, as on lv2 (toolkit PR #416): the
     # SurMixer thread creates the event queue whose key the game hands to cellAudio right after creating it. Opt-in in
     # the toolkit, always on here.
     env["PS3_PRIO_START"] = "1"

@@ -7,10 +7,10 @@ Boot "Loading..." overlay: the window is black for the first seconds of a title.
 - The D3D12 backend does not run the draw engine and has no overlay.
 
 diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
-index 410c29ce..e28f9fc9 100644
+index ec7cbe42..60d96fa7 100644
 --- a/libs/video/rsx_draw_engine.c
 +++ b/libs/video/rsx_draw_engine.c
-@@ -181,6 +181,7 @@ static struct {
+@@ -214,6 +214,7 @@ static struct {
      u64 texture_use_serial;
      u32 guest_draws;
      u32 last_guest_draws;
@@ -18,7 +18,7 @@ index 410c29ce..e28f9fc9 100644
      u32 last_present_surface;
      u32 last_flip_buffer;
      u64 write_serial;       /* orders colour and depth writes to one address */
-@@ -3173,11 +3174,44 @@ static u32 eng_present_surface(u32 buffer_id)
+@@ -3706,12 +3707,45 @@ static u32 eng_present_surface(u32 buffer_id)
      return eng_current_surface();
  }
  
@@ -57,13 +57,14 @@ index 410c29ce..e28f9fc9 100644
      if (!g.ready) return;
      const u32 target = eng_present_surface(buffer_id);
      if (target == ENG_INVALID) return;
+     g.surfaces[target].last_use = g.frames;
 +    if (g.loading == ENG_LOADING_SHOW &&
 +        (g.frames >= ENG_LOADING_MAX_FRAMES || eng_picture_started(&g.surfaces[target])))
 +        g.loading = ENG_LOADING_DONE;
      if (getenv("PS3RECOMP_METAL_FRAME_DUMP") && g.frames % 120 == 0) {
          u32 current = eng_current_surface();
          fprintf(stderr, "[rsx capture] frame=%u buffer=%u selected=%u current=%u draws=%u surfaces=%u\n",
-@@ -3258,6 +3292,10 @@ int rsx_draw_engine_init(u32 width, u32 height)
+@@ -3794,6 +3828,10 @@ int rsx_draw_engine_init(u32 width, u32 height)
      sink.flip             = sink_flip;
      rsx_dispatch_init(&g.rsx, &sink);
      g.ready = 1;
@@ -75,10 +76,10 @@ index 410c29ce..e28f9fc9 100644
      cellGcm_replay_display_buffers_to_engine();
      fprintf(stderr, "[rsx engine] register-file draw engine up (%ux%u)\n",
 diff --git a/libs/video/rsx_draw_engine.h b/libs/video/rsx_draw_engine.h
-index 156ca1bb..77b71a9c 100644
+index 64f7d75a..de24927e 100644
 --- a/libs/video/rsx_draw_engine.h
 +++ b/libs/video/rsx_draw_engine.h
-@@ -323,6 +323,10 @@ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32
+@@ -375,6 +375,10 @@ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32
   * memory first, so the transfer sees (or overwrites) the resolved pixels. */
  void rsx_draw_engine_guest_access(u32 location, u32 offset, u32 bytes);
  
@@ -169,10 +170,10 @@ index 00000000..40e8d6c7
 +
 +#endif
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index 9ffcf07d..f5f28e7a 100644
+index 5b423c20..2880247d 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
-@@ -2238,6 +2238,7 @@ static void release_surfaces(void)
+@@ -2527,6 +2527,7 @@ static void release_surfaces(void)
   * --------------------------------------------------------------------------*/
  
  #include "rsx_draw_engine.h"
@@ -180,7 +181,7 @@ index 9ffcf07d..f5f28e7a 100644
  
  #define ENG_MAX_OBJECTS  4096
  #define ENG_MAX_PIPES    4096
-@@ -2347,6 +2348,8 @@ static void release_surfaces(void)
+@@ -2657,6 +2658,8 @@ static void release_surfaces(void)
  static int   s_eng_fxaa = -1;
  static float s_eng_sharpen = -1.0f;
  static id<MTLRenderPipelineState> s_eng_fxaa_pso;
@@ -189,7 +190,7 @@ index 9ffcf07d..f5f28e7a 100644
  static MTLPixelFormat             s_eng_fxaa_pso_fmt;
  static id<MTLTexture>             s_eng_fxaa_tex;
  
-@@ -2665,6 +2668,7 @@ static void eng_shutdown(void* user)
+@@ -3082,6 +3085,7 @@ static void eng_shutdown(void* user)
      s_eng_linear_sampler = nil;
      s_eng_fxaa_pso = nil;
      s_eng_fxaa_tex = nil;
@@ -197,7 +198,7 @@ index 9ffcf07d..f5f28e7a 100644
      s_eng_active = 0;
      s_eng_encoding_failed = 0;
      s_eng_checked_completed = 0;
-@@ -3591,6 +3595,36 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -4249,6 +4253,36 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
   * PS3_SHARPEN this pass sharpens it as it samples. Either one that is off or
   * fails is skipped. The picture keeps its aspect ratio: it is fitted into the drawable and
   * centred, and the rest is black (letterbox). */
@@ -234,7 +235,7 @@ index 9ffcf07d..f5f28e7a 100644
  static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
                                  id<MTLTexture> dst)
  {
-@@ -3636,6 +3670,7 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+@@ -4294,6 +4328,7 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
            { 1.0f / (float)[src width], 1.0f / (float)[src height] } };
        [e setFragmentBytes:&p length:sizeof p atIndex:0]; }
      [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -243,7 +244,7 @@ index 9ffcf07d..f5f28e7a 100644
  }
  
 diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
-index fc1c04b5..45d9ea00 100644
+index 64240160..352e4b23 100644
 --- a/libs/video/rsx_vulkan_backend.c
 +++ b/libs/video/rsx_vulkan_backend.c
 @@ -52,6 +52,7 @@
@@ -254,8 +255,8 @@ index fc1c04b5..45d9ea00 100644
  #include "vulkan/rsx_vk_fallback_vert.spv.h"
  #include "vulkan/rsx_vk_fallback_frag.spv.h"
  
-@@ -1945,6 +1946,40 @@ static int vk_window_acquire(u32* idx)
-     return 0;
+@@ -1897,6 +1898,40 @@ static void vk_swapchain_lost(void)
+     if (vk_create_swapchain()) vk_window_drop("the swapchain could not be recreated");
  }
  
 +/* The boot "Loading..." text (rsx_loading_overlay.h): copied over the bottom right corner of the swapchain image after
@@ -292,18 +293,18 @@ index fc1c04b5..45d9ea00 100644
 +    pvkCmdCopyBufferToImage(cmd, s_loading_buf.buf, s_vk.sc_images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 +}
 +
- /* Records the blit of the offscreen target into swapchain image `idx`, ending with the image ready to present. */
- static void vk_window_blit(VkCommandBuffer cb, u32 idx)
+ /* Blit the offscreen target into the next swapchain image and present it. */
+ static void vk_present_window(void)
  {
-@@ -1968,6 +2003,7 @@ static void vk_window_blit(VkCommandBuffer cb, u32 idx)
+@@ -1937,6 +1972,7 @@ static void vk_present_window(void)
      pvkCmdBlitImage(cb, s_vk.color.img, VK_IMAGE_LAYOUT_GENERAL,
                      s_vk.sc_images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      1, &blit, VK_FILTER_LINEAR);
-+    if (rsx_draw_engine_loading_overlay()) vk_window_loading(cmd, idx);
++    if (rsx_draw_engine_loading_overlay()) vk_window_loading(cb, idx);
      b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
      b.dstAccessMask = 0;
      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-@@ -3907,6 +3943,8 @@ void rsx_vulkan_backend_shutdown(void)
+@@ -4029,6 +4065,8 @@ void rsx_vulkan_backend_shutdown(void)
          vk_destroy_image(&s_vk.color);
          vk_destroy_buffer(&s_vk.vertices);
          vk_destroy_buffer(&s_vk.readback);

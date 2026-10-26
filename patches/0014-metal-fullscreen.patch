@@ -8,10 +8,10 @@ Metal fullscreen: start in fullscreen on request, Ctrl+Cmd+F toggles it.
 ---
 
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index f5f28e7a..42d7fca3 100644
+index 2880247d..0c8fa725 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
-@@ -616,6 +616,11 @@ static int create_window_impl(const char* title)
+@@ -866,6 +866,11 @@ static int create_window_impl(const char* title)
          NSString* quitTitle = [@"Quit " stringByAppendingString:[NSString stringWithUTF8String:(title ? title : "ps3recomp")]];
          NSMenuItem* quit = [[NSMenuItem alloc] initWithTitle:quitTitle action:@selector(quit:) keyEquivalent:@"q"];
          [quit setTarget:s_quit_target];
@@ -23,13 +23,14 @@ index f5f28e7a..42d7fca3 100644
          [appMenu addItem:quit];
          [appItem setSubmenu:appMenu];
          [NSApp setMainMenu:bar];
-@@ -651,9 +656,15 @@ static int create_window_impl(const char* title)
+@@ -911,10 +916,16 @@ static int create_window_impl(const char* title)
      [view setWantsLayer:YES];
      [view setLayer:s_layer];
  
 +    [s_window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
      [s_window makeKeyAndOrderFront:nil];
      [NSApp activateIgnoringOtherApps:YES];
+     if (was_fullscreen) [s_window toggleFullScreen:nil];
      fps_start();
 +    /* PS3RECOMP_FULLSCREEN=1 (--fullscreen), the same for every backend: start in fullscreen; the picture is letterboxed as in a window. */
 +    {
